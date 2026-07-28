@@ -1,4 +1,13 @@
-<h1>My project is wo</h1>
-<h1>My project is woking</h1>
-<h1>My project is wokinggg</h1>
-<h1>My project is wokingggggg</h1>
+<?php
+$servername = "localhost";
+$username = "root"; 
+$password = ""; 
+$dbname = "qatra_db"; 
+
+$conn = new mysqli($servername, $username, $password, $dbname);
+
+if ($conn->connect_error) {
+die("Database connection failed: " . $conn->connect_error);
+}
+echo "Successfully connected to the QATRA system database!";
+?>
