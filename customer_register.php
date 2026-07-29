@@ -162,6 +162,11 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
                         </div>
 
                         <button type="submit" class="btn btn-register">تسجيل الحساب</button>
+                        
+                    <a href="index.php" class="d-block text-center mt-4 text-decoration-none fw-bold" style="color: #666; transition: 0.3s;" onmouseover="this.style.color='#003366'" onmouseout="this.style.color='#666'">
+                        <i class="fa-solid fa-arrow-right-long me-1"></i> العودة للصفحة الرئيسية
+                    </a>
+
                     </form>
                 </div>
             </div>
