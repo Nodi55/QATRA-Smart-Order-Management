@@ -1,264 +1,188 @@
 ﻿<?php
-/**
- * =====================================================================
- * QATRA (قطرة) - Smart Order Management System
- * National Water Company (NWC) - Landing Page
- * =====================================================================
- */
+// استدعاء ملف الاتصال بقاعدة البيانات لنظام قطرة
 require_once 'db_connect.php';
 ?>
 <!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>قطرة QATRA | نظام إدارة الطلبات الذكي - شركة المياه الوطنية</title>
-
-<!-- Tailwind CSS -->
-<script src="https://cdn.tailwindcss.com"></script>
-<!-- FontAwesome -->
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
-<!-- Google Font: Cairo -->
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
-
-<script>
-  tailwind.config = {
-    theme: {
-      extend: {
-        fontFamily: { cairo: ['Cairo', 'sans-serif'] },
-        colors: {
-          navy:   '#003366',
-          water:  '#0077b6',
-          cyan:   '#caf0f8',
-          offwhite: '#f8f9fa',
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>قطرة | نظام إدارة الطلبات الذكي - شركة المياه الوطنية</title>
+    
+    <!-- مكتبة Bootstrap 5 (RTL) لدعم اللغة العربية وتناسق الشاشات -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.rtl.min.css">
+    
+    <!-- مكتبة FontAwesome للأيقونات -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- خطوط جوجل (Cairo) الاحترافية -->
+    <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;800&display=swap" rel="stylesheet">
+    
+    <style>
+        body {
+            font-family: 'Cairo', sans-serif;
+            background-color: #f4f7f6;
+            color: #333;
         }
-      }
-    }
-  }
-</script>
+        
+        /* شريط التنقل */
+        .navbar {
+            background-color: white;
+            box-shadow: 0 2px 15px rgba(0,0,0,0.05);
+        }
+        .navbar-brand {
+            font-weight: 800;
+            color: #003366 !important;
+            font-size: 1.5rem;
+        }
+        .brand-subtitle {
+            font-size: 0.9rem;
+            color: #0077b6;
+            font-weight: 600;
+        }
 
-<style>
-  * { font-family: 'Cairo', sans-serif; }
-  body { background-color: #f8f9fa; overflow-x: hidden; }
+        /* القسم الترحيبي (Hero) */
+        .hero-section {
+            background: linear-gradient(135deg, #003366 0%, #0077b6 100%);
+            color: white;
+            padding: 100px 0 120px;
+            border-bottom-left-radius: 50px;
+            border-bottom-right-radius: 50px;
+            text-align: center;
+            position: relative;
+        }
+        .hero-section h1 { font-weight: 800; font-size: 2.8rem; margin-bottom: 20px; }
+        .hero-section p { font-size: 1.2rem; font-weight: 400; opacity: 0.9; }
 
-  /* ---------- Hero gradient + animated water waves ---------- */
-  .hero-gradient {
-    background: linear-gradient(135deg, #003366 0%, #0077b6 55%, #0096c7 100%);
-    position: relative;
-    overflow: hidden;
-  }
-  .hero-gradient::after {
-    content: '';
-    position: absolute;
-    inset: 0;
-    background-image: radial-gradient(circle at 20% 20%, rgba(202,240,248,0.12) 0%, transparent 40%),
-                       radial-gradient(circle at 80% 70%, rgba(202,240,248,0.10) 0%, transparent 45%);
-    pointer-events: none;
-  }
-  .wave-divider svg { display: block; width: 100%; height: 80px; }
+        /* البطاقات التفاعلية (Portals) */
+        .portals-container {
+            margin-top: -60px;
+            padding-bottom: 50px;
+        }
+        .portal-card {
+            background: white;
+            border-radius: 20px;
+            border: none;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.08);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+            height: 100%;
+            padding: 40px 30px;
+            text-align: center;
+            position: relative;
+        }
+        .portal-card:hover {
+            transform: translateY(-10px);
+            box-shadow: 0 15px 40px rgba(0,0,0,0.15);
+        }
+        
+        /* الأيقونات فوق البطاقات */
+        .icon-wrapper {
+            width: 80px;
+            height: 80px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 35px;
+            margin: 0 auto 20px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+        }
+        .icon-customer { background-color: #e0f2fe; color: #0ea5e9; }
+        .icon-employee { background-color: #f1f5f9; color: #003366; }
 
-  /* ---------- Glassmorphism portal cards ---------- */
-  .glass-card {
-    background: rgba(255, 255, 255, 0.85);
-    backdrop-filter: blur(14px);
-    -webkit-backdrop-filter: blur(14px);
-    border: 1px solid rgba(255, 255, 255, 0.6);
-    box-shadow: 0 10px 40px rgba(0, 51, 102, 0.10);
-    transition: transform 0.35s ease, box-shadow 0.35s ease;
-  }
-  .glass-card:hover {
-    transform: translateY(-8px);
-    box-shadow: 0 20px 50px rgba(0, 51, 102, 0.18);
-  }
+        .portal-card h3 { font-weight: 800; color: #003366; margin-bottom: 15px; }
+        .portal-card p { color: #666; margin-bottom: 30px; line-height: 1.6; }
 
-  .icon-orb {
-    background: linear-gradient(135deg, #0077b6, #00b4d8);
-    box-shadow: 0 8px 20px rgba(0, 119, 182, 0.35);
-  }
+        /* الأزرار الاحترافية */
+        .btn-custom {
+            padding: 12px 25px;
+            border-radius: 10px;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            width: 100%;
+            margin-bottom: 10px;
+            text-decoration: none;
+            display: inline-block;
+        }
+        .btn-primary-qatra { background-color: #0077b6; color: white; border: none; }
+        .btn-primary-qatra:hover { background-color: #005f8f; color: white; }
+        
+        .btn-outline-qatra { border: 2px solid #0077b6; color: #0077b6; background: transparent; }
+        .btn-outline-qatra:hover { background-color: #0077b6; color: white; }
+        
+        .btn-dark-qatra { background-color: #003366; color: white; border: none; }
+        .btn-dark-qatra:hover { background-color: #001f40; color: white; }
 
-  .btn-primary-water {
-    background: linear-gradient(135deg, #0077b6, #0096c7);
-    transition: all 0.3s ease;
-  }
-  .btn-primary-water:hover {
-    transform: translateY(-3px);
-    box-shadow: 0 10px 25px rgba(0, 119, 182, 0.4);
-  }
-
-  .btn-outline-water {
-    border: 2px solid #0077b6;
-    color: #0077b6;
-    transition: all 0.3s ease;
-  }
-  .btn-outline-water:hover {
-    background: #0077b6;
-    color: #fff;
-    transform: translateY(-3px);
-  }
-
-  .btn-dark-corp {
-    background: linear-gradient(135deg, #003366, #001d3d);
-    transition: all 0.3s ease;
-  }
-  .btn-dark-corp:hover {
-    transform: translateY(-3px);
-    box-shadow: 0 10px 25px rgba(0, 51, 102, 0.45);
-  }
-
-  .navbar-shadow { box-shadow: 0 2px 20px rgba(0,0,0,0.05); }
-
-  .fade-up {
-    animation: fadeUp 0.8s ease both;
-  }
-  @keyframes fadeUp {
-    from { opacity: 0; transform: translateY(24px); }
-    to   { opacity: 1; transform: translateY(0); }
-  }
-  .delay-1 { animation-delay: .15s; }
-  .delay-2 { animation-delay: .3s; }
-  .delay-3 { animation-delay: .45s; }
-</style>
+        /* الفوتر */
+        footer { text-align: center; padding: 20px 0; color: #888; font-size: 0.9rem; }
+    </style>
 </head>
-<body class="text-navy">
+<body>
 
-<!-- ================= NAVBAR ================= -->
-<nav class="fixed top-0 inset-x-0 z-50 bg-white/90 backdrop-blur-md navbar-shadow">
-    <div class="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
-        <div class="flex items-center gap-3">
-            <div class="w-11 h-11 rounded-xl icon-orb flex items-center justify-center text-white text-xl">
-                <i class="fa-solid fa-droplet"></i>
-            </div>
-            <div class="leading-tight">
-                <div class="text-xl font-extrabold text-navy">QATRA <span class="text-water">| قطرة</span></div>
-                <div class="text-[11px] text-gray-500 font-medium tracking-wide">National Water Company</div>
-            </div>
-        </div>
-        <div class="hidden md:flex items-center gap-8 text-sm font-semibold text-gray-600">
-            <a href="#home" class="hover:text-water transition">الرئيسية</a>
-            <a href="#portals" class="hover:text-water transition">البوابات</a>
-            <a href="#about" class="hover:text-water transition">عن النظام</a>
-        </div>
-        <a href="employee_login.php" class="hidden md:inline-block bg-navy text-white text-sm font-bold px-5 py-2.5 rounded-lg hover:bg-water transition">
-            دخول الموظفين
-        </a>
-    </div>
-</nav>
-
-<!-- ================= HERO ================= -->
-<section id="home" class="hero-gradient pt-40 pb-24 px-6 text-center text-white relative">
-    <div class="max-w-4xl mx-auto relative z-10">
-        <span class="fade-up inline-block bg-white/10 border border-white/25 text-cyan text-xs font-bold px-4 py-1.5 rounded-full mb-6 tracking-wide">
-            منصة تشغيلية ذكية ومؤتمتة بالكامل
-        </span>
-        <h1 class="fade-up delay-1 text-4xl md:text-6xl font-extrabold leading-tight mb-6">
-            نظام <span class="text-cyan">قطرة</span> الذكي لإدارة الطلبات
-        </h1>
-        <p class="fade-up delay-2 text-lg md:text-xl text-white/85 leading-relaxed max-w-2xl mx-auto mb-10">
-            رحلة رقمية سلسة وخالية من الأخطاء لتقديم ومتابعة طلبات خدمات المياه والصرف الصحي،
-            بدعم من الذكاء الاصطناعي وتوزيع الفنيين الآلي.
-        </p>
-        <div class="fade-up delay-3 flex flex-col sm:flex-row gap-4 justify-center">
-            <a href="#portals" class="btn-primary-water text-white font-bold px-8 py-3.5 rounded-xl inline-flex items-center justify-center gap-2 shadow-lg">
-                <i class="fa-solid fa-arrow-down"></i>
-                ابدأ الآن
-            </a>
-            <a href="#about" class="border-2 border-white/40 text-white font-bold px-8 py-3.5 rounded-xl inline-flex items-center justify-center gap-2 hover:bg-white/10 transition">
-                تعرّف على النظام
+    <!-- شريط التنقل (Navbar) -->
+    <nav class="navbar navbar-expand-lg navbar-light sticky-top">
+        <div class="container d-flex justify-content-between align-items-center">
+            <a class="navbar-brand d-flex align-items-center" href="#">
+                <i class="fa-solid fa-droplet me-2" style="color: #0077b6; margin-left: 10px;"></i>
+                قطرة <span class="mx-2 text-muted">|</span> <span class="brand-subtitle">شركة المياه الوطنية</span>
             </a>
         </div>
-    </div>
+    </nav>
 
-    <!-- Wave divider -->
-    <div class="wave-divider absolute bottom-0 inset-x-0 leading-none">
-        <svg viewBox="0 0 1440 100" preserveAspectRatio="none">
-            <path d="M0,40 C320,100 1120,0 1440,60 L1440,100 L0,100 Z" fill="#f8f9fa"></path>
-        </svg>
-    </div>
-</section>
-
-<!-- ================= PORTALS ================= -->
-<section id="portals" class="max-w-6xl mx-auto px-6 py-24">
-    <div class="text-center mb-14">
-        <h2 class="text-3xl md:text-4xl font-extrabold text-navy mb-3">اختر بوابتك</h2>
-        <p class="text-gray-500 max-w-xl mx-auto">وصول مخصص لكل مستخدم حسب دوره في المنظومة</p>
-    </div>
-
-    <div class="grid md:grid-cols-2 gap-8">
-
-        <!-- Card A: Customer Portal -->
-        <div class="glass-card rounded-2xl p-8 md:p-10">
-            <div class="w-16 h-16 rounded-2xl icon-orb flex items-center justify-center text-white text-2xl mb-6">
-                <i class="fa-solid fa-house-user"></i>
-            </div>
-            <h3 class="text-2xl font-extrabold text-navy mb-2">بوابة العملاء</h3>
-            <p class="text-gray-500 leading-loose mb-8">
-                لتقديم ومتابعة طلبات المياه والصرف الصحي
-            </p>
-            <div class="flex flex-col sm:flex-row gap-3">
-                <a href="customer_login.php"
-                   class="btn-primary-water flex-1 text-white font-bold px-5 py-3 rounded-lg text-center flex items-center justify-center gap-2">
-                    <i class="fa-solid fa-key"></i>
-                    تسجيل الدخول (OTP)
-                </a>
-                <a href="customer_register.php"
-                   class="btn-outline-water flex-1 font-bold px-5 py-3 rounded-lg text-center flex items-center justify-center gap-2 bg-white">
-                    <i class="fa-solid fa-user-plus"></i>
-                    حساب جديد
-                </a>
-            </div>
+    <!-- القسم الترحيبي -->
+    <section class="hero-section">
+        <div class="container">
+            <h1>نظام إدارة الطلبات الذكي (قطرة)</h1>
+            <p>منصة رقمية متكاملة لتقديم ومتابعة خدمات المياه والصرف الصحي بكل سهولة وموثوقية.</p>
         </div>
+    </section>
 
-        <!-- Card B: Employee Portal -->
-        <div class="glass-card rounded-2xl p-8 md:p-10">
-            <div class="w-16 h-16 rounded-2xl bg-gradient-to-br from-navy to-[#001d3d] flex items-center justify-center text-white text-2xl mb-6 shadow-lg">
-                <i class="fa-solid fa-gears"></i>
+    <!-- قسم بوابات الدخول -->
+    <section class="portals-container container">
+        <div class="row justify-content-center g-4">
+            
+            <!-- بوابة العملاء -->
+            <div class="col-md-5">
+                <div class="portal-card">
+                    <div class="icon-wrapper icon-customer">
+                        <i class="fa-solid fa-users"></i>
+                    </div>
+                    <h3>بوابة العملاء</h3>
+                    <p>الواجهة المخصصة للمستفيدين لتقديم طلبات التأسيس الجديدة، رفع الصكوك، ومتابعة حالة الطلبات والفواتير.</p>
+                    <a href="customer_login.php" class="btn-custom btn-primary-qatra">
+                        <i class="fa-solid fa-mobile-screen-button me-2"></i> تسجيل الدخول (OTP)
+                    </a>
+                    <a href="customer_register.php" class="btn-custom btn-outline-qatra">
+                        <i class="fa-solid fa-user-plus me-2"></i> تسجيل حساب جديد
+                    </a>
+                </div>
             </div>
-            <h3 class="text-2xl font-extrabold text-navy mb-2">بوابة فريق العمل</h3>
-            <p class="text-gray-500 leading-loose mb-8">
-                للمدققين، وإدارة المهام، والفنيين
-            </p>
-            <a href="employee_login.php"
-               class="btn-dark-corp w-full text-white font-bold px-5 py-3 rounded-lg text-center flex items-center justify-center gap-2">
-                <i class="fa-solid fa-right-to-bracket"></i>
-                دخول الموظفين
-            </a>
-        </div>
 
-    </div>
-</section>
-
-<!-- ================= ABOUT / STRIP ================= -->
-<section id="about" class="bg-cyan/40 py-16 px-6">
-    <div class="max-w-5xl mx-auto grid sm:grid-cols-3 gap-8 text-center">
-        <div>
-            <div class="w-14 h-14 rounded-full bg-white icon-orb text-white flex items-center justify-center mx-auto mb-4 text-xl">
-                <i class="fa-solid fa-shield-halved"></i>
+            <!-- بوابة الموظفين -->
+            <div class="col-md-5">
+                <div class="portal-card">
+                    <div class="icon-wrapper icon-employee">
+                        <i class="fa-solid fa-user-tie"></i>
+                    </div>
+                    <h3>بوابة فريق العمل</h3>
+                    <p>النظام التشغيلي المخصص لمدققي البيانات، الإدارة الميدانية، وفنيي التركيبات لإدارة المهام الذكية.</p>
+                    <a href="employee_login.php" class="btn-custom btn-dark-qatra" style="margin-top: 56px;">
+                        <i class="fa-solid fa-envelope me-2"></i> دخول الموظفين (Email)
+                    </a>
+                </div>
             </div>
-            <h4 class="font-bold text-navy mb-1">تحقق آلي وآمن</h4>
-            <p class="text-sm text-gray-500">مطابقة فورية مع سجلات وزارة العدل</p>
-        </div>
-        <div>
-            <div class="w-14 h-14 rounded-full bg-white icon-orb text-white flex items-center justify-center mx-auto mb-4 text-xl">
-                <i class="fa-solid fa-route"></i>
-            </div>
-            <h4 class="font-bold text-navy mb-1">تعيين ذكي للفنيين</h4>
-            <p class="text-sm text-gray-500">توزيع تلقائي حسب الموقع وعبء العمل</p>
-        </div>
-        <div>
-            <div class="w-14 h-14 rounded-full bg-white icon-orb text-white flex items-center justify-center mx-auto mb-4 text-xl">
-                <i class="fa-solid fa-file-invoice-dollar"></i>
-            </div>
-            <h4 class="font-bold text-navy mb-1">فوترة وتسعير آلي</h4>
-            <p class="text-sm text-gray-500">حساب دقيق للفواتير دون تدخل بشري</p>
-        </div>
-    </div>
-</section>
 
-<!-- ================= FOOTER ================= -->
-<footer class="bg-navy text-white/70 text-center py-6 text-sm">
-    جميع الحقوق محفوظة &copy; <?= date('Y') ?> - شركة المياه الوطنية
-</footer>
+        </div>
+    </section>
 
+    <!-- الفوتر -->
+    <footer>
+        <div class="container">
+            <p>&copy; 2026 جميع الحقوق محفوظة - نظام قطرة | شركة المياه الوطنية (NWC)</p>
+        </div>
+    </footer>
+
+    <!-- مكتبة Bootstrap JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
