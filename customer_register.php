@@ -4,8 +4,8 @@
  * QATRA (قطرة) - نظام إدارة الطلبات الذكي
  * صفحة تسجيل حساب عميل جديد
  * =====================================================================
- * الجدول: Customer (cust_id PK, national_id UNIQUE, full_name,
- *                    phone_number, password_hash, cty_id FK, created_at)
+ * ⚠️ أسماء الجداول في القاعدة السحابية بأحرف صغيرة بالكامل:
+ *    customer, city, region, otp_code, notification, moj_record, ...
  * ملاحظة: هذا الملف يعتمد على db_connect.php الذي يُنشئ متغير $pdo
  * =====================================================================
  */
@@ -26,6 +26,21 @@ $old = [
     'phone_number' => '',
     'cty_id'       => '',
 ];
+
+// ---------------------------------------------------------------------
+// جلب المدن والمناطق مرة واحدة فقط (يُستخدم لاحقاً داخل الفورم)
+// ---------------------------------------------------------------------
+$citiesData  = [];
+$citiesError = '';
+try {
+    $cityQuery = "SELECT city.cty_id, city.cty_name, region.reg_name
+                  FROM city
+                  JOIN region ON city.reg_id = region.reg_id
+                  ORDER BY region.reg_id, city.cty_id";
+    $citiesData = $pdo->query($cityQuery)->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    $citiesError = 'عذراً، لا يمكن جلب المدن حالياً';
+}
 
 // ---------------------------------------------------------------------
 // معالجة إرسال النموذج
@@ -68,9 +83,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         try {
             $passwordHash = password_hash($password, PASSWORD_DEFAULT);
 
-            // ⚠️ استخدام $pdo (وليس $conn) والعمود الصحيح cty_id
+            // ⚠️ اسم الجدول بأحرف صغيرة: customer (وليس Customer)
             $stmt = $pdo->prepare(
-                'INSERT INTO Customer (national_id, full_name, phone_number, password_hash, cty_id)
+                'INSERT INTO customer (national_id, full_name, phone_number, password_hash, cty_id)
                  VALUES (:national_id, :full_name, :phone_number, :password_hash, :cty_id)'
             );
 
@@ -185,43 +200,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             </div>
                         </div>
 
-                        <!-- قائمة المدن: تُجلب ديناميكياً من City JOIN Region -->
+                        <!-- قائمة المدن: مصدرها الوحيد $citiesData المجلوبة بالأعلى -->
                         <div class="mb-3">
                             <label class="form-label">المنطقة والمدينة</label>
                             <select name="cty_id" class="form-select" required>
                                 <option value="" disabled <?= $old['cty_id'] === '' ? 'selected' : '' ?>>اختر مدينتك (القطاع الشمالي)...</option>
-                                <?php
-                                try {
-                                    // الترتيب حسب reg_id ثم cty_id (نفس ترتيب الإدخال في ملف seed_regions_cities.sql)
-                                    // وليس ترتيباً أبجدياً، حتى تطابق القائمة نفس ترتيب كودك تماماً
-                                    $cityQuery = "SELECT City.cty_id, City.cty_name, Region.reg_name
-                                                  FROM City
-                                                  JOIN Region ON City.reg_id = Region.reg_id
-                                                  ORDER BY Region.reg_id, City.cty_id";
 
-                                    $stmtCities = $pdo->query($cityQuery);
-                                    $citiesData = $stmtCities->fetchAll(PDO::FETCH_ASSOC);
-
+                                <?php if ($citiesError): ?>
+                                    <option disabled><?= htmlspecialchars($citiesError) ?></option>
+                                <?php elseif (empty($citiesData)): ?>
+                                    <option disabled>لا توجد مدن مسجلة حالياً</option>
+                                <?php else: ?>
+                                    <?php
                                     $currentRegion = '';
-                                    foreach ($citiesData as $row) {
-                                        if ($currentRegion !== $row['reg_name']) {
-                                            if ($currentRegion !== '') echo '</optgroup>';
-                                            $currentRegion = $row['reg_name'];
-                                            echo '<optgroup label="' . htmlspecialchars($currentRegion) . '">';
-                                        }
-                                        $isSelected = ((string) $row['cty_id'] === $old['cty_id']) ? 'selected' : '';
-                                        echo '<option value="' . (int) $row['cty_id'] . '" ' . $isSelected . '>'
-                                             . htmlspecialchars($row['cty_name']) . '</option>';
-                                    }
-                                    if ($currentRegion !== '') echo '</optgroup>';
-
-                                    if (empty($citiesData)) {
-                                        echo '<option disabled>لا توجد مدن مسجلة حالياً - نفّذي ملف seed_regions_cities.sql</option>';
-                                    }
-                                } catch (PDOException $e) {
-                                    echo '<option disabled>عذراً، لا يمكن جلب المدن حالياً</option>';
-                                }
-                                ?>
+                                    foreach ($citiesData as $row):
+                                        if ($currentRegion !== $row['reg_name']):
+                                            if ($currentRegion !== ''): ?>
+                                                </optgroup>
+                                            <?php endif;
+                                            $currentRegion = $row['reg_name']; ?>
+                                            <optgroup label="<?= htmlspecialchars($currentRegion) ?>">
+                                        <?php endif; ?>
+                                        <option value="<?= (int) $row['cty_id'] ?>"
+                                            <?= ((string) $row['cty_id'] === $old['cty_id']) ? 'selected' : '' ?>>
+                                            <?= htmlspecialchars($row['cty_name']) ?>
+                                        </option>
+                                    <?php endforeach; ?>
+                                    </optgroup>
+                                <?php endif; ?>
                             </select>
                         </div>
 

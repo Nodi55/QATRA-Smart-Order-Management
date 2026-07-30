@@ -1,76 +1,73 @@
-﻿
-<?php
+﻿<?php
 /**
  * =====================================================================
- * QATRA (قطرة) - ملف الاتصال بقاعدة البيانات
- * =====================================================================
- * ✅ هذا الملف يحتوي على تعبئة تلقائية للمناطق والمدن.
- *    ما تحتاجين تسوين أي شيء يدوي على أي جهاز - بمجرد ما أي صفحة
- *    تفتح وتتصل بقاعدة البيانات، النظام يتحقق تلقائياً:
- *    "هل جدول المناطق فاضي؟" ولو فاضي يعبّيه لحاله مرة واحدة فقط،
- *    وبعدها ما يكرر العملية أبداً (حتى لو فُتح الموقع آلاف المرات
- *    من أجهزة مختلفة).
+ * QATRA (قطرة) - ملف الاتصال بقاعدة البيانات السحابية (Clever Cloud)
  * =====================================================================
  */
 
-$host     = 'localhost';
-$dbname   = 'qatra_db';
-$username = 'root';
-$password = '';
+$host     = 'bsfbmb13afxzn35nolyb-mysql.services.clever-cloud.com';
+$port     = '3306';
+$dbname   = 'bsfbmb13afxzn35nolyb';
+$username = 'ubracuf3anbungl9';
+$password = 'YEcp35Qxa68MIhQbUMDN';
 
 try {
-    $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8", $username, $password);
+    $pdo = new PDO(
+        "mysql:host=$host;port=$port;dbname=$dbname;charset=utf8mb4",
+        $username,
+        $password
+    );
     $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 } catch (PDOException $e) {
-    die("فشل الاتصال بقاعدة البيانات: " . $e->getMessage());
+    die("❌ فشل الاتصال بقاعدة البيانات السحابية: " . $e->getMessage());
 }
 
 // =====================================================================
-// التعبئة التلقائية للمناطق والمدن (تعمل مرة واحدة فقط تلقائياً)
+// التعبئة التلقائية للمناطق والمدن 
 // =====================================================================
 try {
-    // نتحقق أولاً: هل جدول Region فاضي؟ (يعني المشروع لسا ما انعبّى)
-    $regionCount = (int) $pdo->query('SELECT COUNT(*) FROM Region')->fetchColumn();
+    $tableExists = $pdo->query("SHOW TABLES LIKE 'Region'")->rowCount();
 
-    if ($regionCount === 0) {
+    if ($tableExists > 0) {
+        $regionCount = (int) $pdo->query('SELECT COUNT(*) FROM Region')->fetchColumn();
 
-        $regionsAndCities = [
-            'منطقة القصيم' => [
-                'بريدة', 'عنيزة', 'الرس', 'المذنب', 'البكيرية',
-            'الربيعية ',
-            ],
-            'منطقة حائل' => [
-                'حائل', 'بقعاء', 'الشنان', 'الغزالة', 'الحائط',
-            ],
-            'منطقة الحدود الشمالية' => [
-                'عرعر', 'رفحاء', 'طريف',
-            ],
-            'منطقة الجوف' => [
-                'سكاكا', 'القريات', 'دومة الجندل', 'طبرجل',
-            ],
-        ];
+        if ($regionCount === 0) {
 
-        $pdo->beginTransaction();
+            $regionsAndCities = [
+                'منطقة القصيم' => [
+                    'بريدة', 'عنيزة', 'الرس', 'الربيعية', 'البكيرية',
+                    
+                ],
+                'منطقة حائل' => [
+                    'حائل', 'بقعاء', 'الشنان','الحائط'
+                ],
+                'الحدود الشمالية' => [
+                    'عرعر', 'رفحاء', 'طريف'
+                ],
+                'منطقة الجوف' => [
+                    'سكاكا', 'القريات', 'دومة الجندل', 'طبرجل'
+                ]
+            ];
 
-        $insertRegion = $pdo->prepare('INSERT INTO Region (reg_name) VALUES (:reg_name)');
-        $insertCity   = $pdo->prepare('INSERT INTO City (cty_name, reg_id) VALUES (:cty_name, :reg_id)');
+            $pdo->beginTransaction();
 
-        foreach ($regionsAndCities as $regionName => $cities) {
-            $insertRegion->execute([':reg_name' => $regionName]);
-            $regId = $pdo->lastInsertId();
+            $insertRegion = $pdo->prepare('INSERT INTO Region (reg_name) VALUES (:reg_name)');
+            $insertCity   = $pdo->prepare('INSERT INTO City (cty_name, reg_id) VALUES (:cty_name, :reg_id)');
 
-            foreach ($cities as $cityName) {
-                $insertCity->execute([':cty_name' => $cityName, ':reg_id' => $regId]);
+            foreach ($regionsAndCities as $regionName => $cities) {
+                $insertRegion->execute([':reg_name' => $regionName]);
+                $regId = $pdo->lastInsertId();
+
+                foreach ($cities as $cityName) {
+                    $insertCity->execute([':cty_name' => $cityName, ':reg_id' => $regId]);
+                }
             }
+
+            $pdo->commit();
         }
-
-        $pdo->commit();
     }
-
 } catch (PDOException $e) {
-    // لو صار خطأ في التعبئة التلقائية، لا نوقف الموقع بالكامل
-    // (الصفحات الأخرى غير المرتبطة بالمدن تبقى تعمل بشكل طبيعي)
-    if ($pdo->inTransaction()) {
+    if (isset($pdo) && $pdo->inTransaction()) {
         $pdo->rollBack();
     }
 }
