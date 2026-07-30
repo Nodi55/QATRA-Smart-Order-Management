@@ -152,11 +152,10 @@ require_once 'db_connect.php';
             منصة تشغيلية ذكية ومؤتمتة بالكامل
         </span>
         <h1 class="fade-up delay-1 text-4xl md:text-6xl font-extrabold leading-tight mb-6">
-            نظام <span class="text-cyan">قطرة</span> الذكي لإدارة الطلبات
+            نظام <span class="text-cyan">قطرة</span> 
         </h1>
         <p class="fade-up delay-2 text-lg md:text-xl text-white/85 leading-relaxed max-w-2xl mx-auto mb-10">
-            رحلة رقمية سلسة وخالية من الأخطاء لتقديم ومتابعة طلبات خدمات المياه والصرف الصحي،
-            بدعم من الذكاء الاصطناعي وتوزيع الفنيين الآلي.
+            رحلة رقمية لتقديم ومتابعة طلبات خدمات المياه والصرف الصحي،
         </p>
         <div class="fade-up delay-3 flex flex-col sm:flex-row gap-4 justify-center">
             <a href="#portals" class="btn-primary-water text-white font-bold px-8 py-3.5 rounded-xl inline-flex items-center justify-center gap-2 shadow-lg">
@@ -196,10 +195,10 @@ require_once 'db_connect.php';
                 لتقديم ومتابعة طلبات المياه والصرف الصحي
             </p>
             <div class="flex flex-col sm:flex-row gap-3">
-                <a href="customer_login.php"
+                <a href="login.php"
                    class="btn-primary-water flex-1 text-white font-bold px-5 py-3 rounded-lg text-center flex items-center justify-center gap-2">
                     <i class="fa-solid fa-key"></i>
-                    تسجيل الدخول (OTP)
+                    تسجيل الدخول
                 </a>
                 <a href="customer_register.php"
                    class="btn-outline-water flex-1 font-bold px-5 py-3 rounded-lg text-center flex items-center justify-center gap-2 bg-white">
