@@ -27,10 +27,10 @@ require_once 'db_connect.php';
 // التحقق من تسجيل الدخول
 if (!isset($_SESSION['customer_national_id'])) {
     die("<div style='display:flex; justify-content:center; align-items:center; height:100vh; background:#f8fafc; font-family:Cairo, sans-serif; direction:rtl;'>
-            <div style='text-align:center; background:white; padding:40px; border-radius:20px; box-shadow:0 15px 35px rgba(0,45,92,0.1); border-top:5px solid #002d5c;'>
-                <h2 style='color:#002d5c; margin-bottom:15px;'>جلسة غير صالحة</h2>
+            <div style='text-align:center; background:white; padding:40px; border-radius:20px; box-shadow:0 15px 35px rgba(9,46,84,0.1); border-top:5px solid #092e54;'>
+                <h2 style='color:#092e54; margin-bottom:15px;'>جلسة غير صالحة</h2>
                 <p style='color:#64748b; font-size:1.1rem;'>الرجاء تسجيل الدخول أولاً للوصول إلى البوابة الذكية.</p>
-                <a href='login.php' style='display:inline-block; margin-top:20px; padding:12px 30px; background:#009FE3; color:white; text-decoration:none; border-radius:50px; font-weight:bold;'>العودة لتسجيل الدخول</a>
+                <a href='login.php' style='display:inline-block; margin-top:20px; padding:12px 30px; background:#4492d4; color:white; text-decoration:none; border-radius:50px; font-weight:bold;'>العودة لتسجيل الدخول</a>
             </div>
          </div>");
 }
@@ -158,32 +158,81 @@ function getStatusBadge($status) {
     
     <style>
         :root { 
-            --nwc-navy: #002d5c;    
-            --nwc-blue: #009FE3;    
-            --nwc-light: #e6f5fc;   
-            --bg-color: #f4f7f9; 
-            --card-shadow: 0 12px 24px rgba(0, 45, 92, 0.06);
+            --nwc-navy: #092e54;    
+            --nwc-blue: #4492d4;    
+            --nwc-light: #eaf3fb;   
+            --bg-color: #092e54; 
+            --card-shadow: 0 25px 60px rgba(0, 0, 0, 0.25);
         }
         
-        body { font-family: 'Cairo', sans-serif; background-color: var(--bg-color); color: #334155; overflow-x: hidden; }
+        body { font-family: 'Cairo', sans-serif; background-color: var(--bg-color); color: #334155; overflow-x: hidden; position: relative; }
+
+        /* --- خلفية متحركة احترافية بفقاعات مائية (مطابقة لصفحة الدخول) --- */
+        .bg-animation {
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            z-index: 0;
+            background: radial-gradient(circle at top right, #10599c 0%, var(--nwc-navy) 70%);
+            pointer-events: none;
+        }
+        .water-drop {
+            position: absolute;
+            bottom: -100px;
+            background: linear-gradient(180deg, rgba(125, 211, 252, 0.1) 0%, rgba(125, 211, 252, 0.4) 100%);
+            border-radius: 50%;
+            animation: floatUp infinite ease-in;
+            backdrop-filter: blur(5px);
+        }
+        @keyframes floatUp {
+            0% { transform: translateY(0) scale(0.8); opacity: 0; }
+            50% { opacity: 1; }
+            100% { transform: translateY(-120vh) scale(1.2); opacity: 0; }
+        }
+        .container { position: relative; z-index: 10; }
 
         /* --- الأنيميشن --- */
         .fade-in-up { animation: fadeInUp 0.7s cubic-bezier(0.2, 0.8, 0.2, 1) forwards; opacity: 0; transform: translateY(20px); }
         .delay-1 { animation-delay: 0.1s; } .delay-2 { animation-delay: 0.2s; } .delay-3 { animation-delay: 0.3s; }
         @keyframes fadeInUp { to { opacity: 1; transform: translateY(0); } }
 
-        /* --- الأشكال الهندسية العائمة للألوان --- */
-        .shape { position: absolute; opacity: 0.6; z-index: 0; animation: floatShape 8s ease-in-out infinite; }
-        .shape-1 { width: 100px; height: 100px; background: linear-gradient(135deg, #f59e0b, #ef4444); border-radius: 50%; top: -10%; right: 5%; filter: blur(4px); }
-        .shape-2 { width: 70px; height: 70px; background: linear-gradient(135deg, #10b981, #3b82f6); clip-path: polygon(50% 0%, 0% 100%, 100% 100%); bottom: 10%; left: 10%; animation-delay: 2s; }
-        .shape-3 { width: 50px; height: 50px; background: linear-gradient(135deg, #8b5cf6, #ec4899); border-radius: 12px; transform: rotate(45deg); top: 20%; left: 40%; animation-delay: 4s; }
-        .shape-4 { width: 120px; height: 120px; background: radial-gradient(circle, #38bdf8 0%, rgba(0,0,0,0) 70%); border-radius: 50%; bottom: -10%; right: 30%; animation-delay: 1s; }
-        @keyframes floatShape { 0% { transform: translateY(0) rotate(0deg); } 50% { transform: translateY(-25px) rotate(15deg); } 100% { transform: translateY(0) rotate(0deg); } }
+        /* --- منطقة الترحيب: صندوقان منفصلان تماماً --- */
+        .hero-plain { padding: 10px 5px 25px; }
+        .hero-name { color: #7dd3fc; font-weight: 900; }
+        .hero-flex-row {
+            display: flex; align-items: stretch; flex-wrap: wrap; gap: 18px;
+        }
+        .hero-text-box {
+            flex: 1 1 400px;
+            background: rgba(255,255,255,0.05);
+            border: 1px solid rgba(255,255,255,0.15);
+            border-radius: 20px; padding: 24px 28px;
+            backdrop-filter: blur(8px);
+        }
+        .hero-count-pill {
+            display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
+            flex: 0 0 auto; min-width: 160px;
+            background: rgba(255,255,255,0.05);
+            border: 1px solid rgba(255,255,255,0.15);
+            border-radius: 20px; padding: 20px 28px;
+            backdrop-filter: blur(8px);
+        }
+        .hero-count-pill i { color: #7dd3fc; font-size: 1.6rem; }
+        .hero-count-pill .hero-count-number { color: #ffffff; font-weight: 900; font-size: 2.3rem; line-height: 1; }
+        .hero-count-pill .hero-count-label { color: #cbd5e1; font-weight: 700; font-size: 0.9rem; }
+        @media (max-width: 576px) {
+            .hero-text-box h1 { font-size: 1.5rem !important; }
+            .hero-count-pill { flex-direction: row; width: 100%; min-width: 0; }
+        }
 
         /* --- الشريط العلوي --- */
-        .navbar-luxury { background: rgba(255, 255, 255, 0.95); backdrop-filter: blur(10px); padding: 15px 0; box-shadow: 0 4px 30px rgba(0, 0, 0, 0.05); border-bottom: 1px solid rgba(0, 159, 227, 0.1); position: sticky; top: 0; z-index: 1050; }
-        .brand-icon { background: linear-gradient(135deg, var(--nwc-blue), var(--nwc-navy)); color: white; width: 50px; height: 50px; display: flex; align-items: center; justify-content: center; border-radius: 16px; font-size: 1.6rem; box-shadow: 0 8px 20px rgba(0, 159, 227, 0.3); transition: transform 0.3s; }
+        .navbar-luxury { background: rgba(255, 255, 255, 0.97); backdrop-filter: blur(20px); padding: 15px 0; box-shadow: 0 15px 35px rgba(0, 0, 0, 0.25); border-bottom: 1px solid rgba(255, 255, 255, 0.2); position: sticky; top: 0; z-index: 1050; position: relative; }
+        .navbar-luxury::after {
+            content: ''; position: absolute; bottom: 0; left: 10%; width: 80%; height: 4px;
+            background: linear-gradient(90deg, transparent, var(--nwc-blue), transparent);
+        }
+        .brand-icon { background: linear-gradient(135deg, var(--nwc-navy), #0a1128); width: 50px; height: 50px; display: flex; align-items: center; justify-content: center; border-radius: 16px; box-shadow: 0 8px 20px rgba(9, 46, 84, 0.3); transition: transform 0.3s; }
         .brand-icon:hover { transform: scale(1.05) rotate(-5deg); }
+        .brand-icon svg { width: 26px; height: 30px; }
         .user-profile-badge { background: white; padding: 6px 20px 6px 6px; border-radius: 50px; font-weight: 700; color: var(--nwc-navy); border: 1px solid #e2e8f0; display: flex; align-items: center; gap: 12px; box-shadow: 0 4px 10px rgba(0,0,0,0.02); cursor: pointer; transition: 0.3s; }
         .user-profile-badge:hover { background: #f8fafc; border-color: var(--nwc-blue); }
         .user-avatar { width: 38px; height: 38px; background: var(--nwc-light); color: var(--nwc-blue); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 1.2rem; }
@@ -192,32 +241,43 @@ function getStatusBadge($status) {
         .btn-logout { transition: all 0.3s; width: 42px; height: 42px; display: flex; align-items: center; justify-content: center; }
         .btn-logout:hover { background-color: #ef4444 !important; color: white !important; transform: rotate(90deg); }
 
-        /* --- البطاقة الترحيبية الملونة --- */
-        .hero-banner { 
-            background: linear-gradient(135deg, var(--nwc-navy) 0%, #0a1128 100%); 
-            color: white; padding: 45px; border-radius: 28px; 
-            box-shadow: 0 25px 50px rgba(0, 45, 92, 0.2); 
-            position: relative; overflow: hidden; display: flex; justify-content: space-between; align-items: center;
+        /* --- حاويات المحتوى (بطاقة زجاجية مطابقة لتسجيل الدخول) --- */
+        .premium-card {
+            background: rgba(255, 255, 255, 0.97);
+            backdrop-filter: blur(20px);
+            border-radius: 24px; padding: 40px; box-shadow: var(--card-shadow);
+            border: 1px solid rgba(255,255,255,0.2); height: 100%; position: relative;
         }
-        .text-gradient {
-            background: linear-gradient(120deg, #6ee7b7, #38bdf8, #818cf8);
-            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
-            text-shadow: 0 4px 15px rgba(56, 189, 248, 0.3);
+        .premium-card::before {
+            content: ''; position: absolute; top: 0; left: 10%; width: 80%; height: 4px;
+            background: linear-gradient(90deg, transparent, var(--nwc-blue), transparent);
+            border-radius: 0 0 10px 10px;
         }
-        .hero-stats { display: flex; gap: 20px; z-index: 1; }
-        .stat-box { background: rgba(255,255,255,0.1); backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.2); border-radius: 20px; padding: 20px 30px; text-align: center; min-width: 130px; }
-        .stat-box h3 { font-weight: 900; margin: 0; font-size: 2.2rem; color: #fff; }
-        .stat-box p { margin: 0; font-size: 0.9rem; font-weight: 600; color: var(--nwc-light); }
-
-        /* --- حاويات المحتوى --- */
-        .premium-card { background: white; border-radius: 28px; padding: 40px; box-shadow: var(--card-shadow); border: 1px solid rgba(255,255,255,0.8); height: 100%; position: relative; }
+        /* بطاقة شفافة بدون خلفية أو حدود، وارتفاعها على قدر محتواها فقط */
+        .premium-card.card-plain {
+            background: transparent;
+            backdrop-filter: none;
+            box-shadow: none;
+            border: none;
+            height: auto;
+            padding: 40px 0;
+        }
+        .premium-card.card-plain::before { display: none; }
+        .premium-card.card-plain .card-header-title { color: #ffffff; border-bottom-color: rgba(255,255,255,0.15); }
+        .premium-card.card-plain .card-header-title i { background: rgba(255,255,255,0.1); color: #7dd3fc; }
+        .premium-card.card-plain .table-custom th { color: #93c5fd; border-bottom-color: rgba(255,255,255,0.15); }
+        .premium-card.card-plain .table-custom td { color: #eaf3fb; border-bottom-color: rgba(255,255,255,0.08); }
+        .premium-card.card-plain .empty-state-icon { background: rgba(255,255,255,0.1); color: #7dd3fc; }
+        .premium-card.card-plain .empty-state h4 { color: #ffffff; }
+        .premium-card.card-plain .empty-state p { color: #cbd5e1; }
         .card-header-title { color: var(--nwc-navy); font-weight: 900; font-size: 1.4rem; margin-bottom: 30px; display: flex; align-items: center; gap: 12px; border-bottom: 2px solid var(--nwc-light); padding-bottom: 15px; }
         .card-header-title i { background: var(--nwc-light); color: var(--nwc-blue); width: 45px; height: 45px; display: flex; align-items: center; justify-content: center; border-radius: 12px; font-size: 1.2rem; }
 
         /* --- النماذج --- */
         .form-label { font-weight: 800; color: #334155; font-size: 0.95rem; margin-bottom: 10px; }
+        .required-mark { color: #b91c1c; font-weight: 800; margin-inline-start: 2px; }
         .form-control, .form-select { border-radius: 16px; border: 2px solid #e2e8f0; padding: 16px 20px; font-weight: 700; color: #1e293b; background: #f8fafc; transition: all 0.3s; font-size: 1rem; }
-        .form-control:focus, .form-select:focus { border-color: var(--nwc-blue); background: white; box-shadow: 0 0 0 5px rgba(0, 159, 227, 0.15); outline: none; }
+        .form-control:focus, .form-select:focus { border-color: var(--nwc-blue); background: white; box-shadow: 0 0 0 5px rgba(68, 146, 212, 0.15); outline: none; }
         
         /* --- الخريطة والرفع --- */
         .map-container { border: 2px solid #e2e8f0; border-radius: 20px; overflow: hidden; position: relative; height: 300px; box-shadow: inset 0 4px 10px rgba(0,0,0,0.05); }
@@ -232,8 +292,8 @@ function getStatusBadge($status) {
         .file-status { display: none; background: #ecfdf5; color: #059669; padding: 12px; border-radius: 12px; font-weight: 800; text-align: center; margin-top: 15px; border: 1px solid #a7f3d0; }
 
         /* --- الأزرار والشارات --- */
-        .btn-brand { background: linear-gradient(135deg, var(--nwc-blue), var(--nwc-navy)); color: white; border: none; border-radius: 16px; padding: 18px; font-weight: 900; font-size: 1.2rem; width: 100%; transition: all 0.4s; box-shadow: 0 10px 25px rgba(0, 45, 92, 0.2); display: flex; justify-content: center; align-items: center; gap: 10px; }
-        .btn-brand:hover { transform: translateY(-4px); box-shadow: 0 15px 35px rgba(0, 45, 92, 0.3); color: white; }
+        .btn-brand { background: linear-gradient(135deg, var(--nwc-navy), var(--nwc-blue)); color: white; border: none; border-radius: 16px; padding: 18px; font-weight: 900; font-size: 1.2rem; width: 100%; transition: all 0.4s; box-shadow: 0 10px 25px rgba(9, 46, 84, 0.2); display: flex; justify-content: center; align-items: center; gap: 10px; }
+        .btn-brand:hover { transform: translateY(-4px); box-shadow: 0 15px 35px rgba(9, 46, 84, 0.3); color: white; }
         
         .table-custom th { border-bottom: 2px solid var(--nwc-light); color: #64748b; font-weight: 800; padding: 18px 15px; font-size: 0.95rem; }
         .table-custom td { padding: 20px 15px; border-bottom: 1px solid #f1f5f9; vertical-align: middle; font-weight: 700; color: #1e293b; }
@@ -252,11 +312,54 @@ function getStatusBadge($status) {
 </head>
 <body>
 
+<!-- الخلفية المائية المتحركة (مطابقة لصفحة الدخول) -->
+<div class="bg-animation" id="bg-particles"></div>
+<script>
+    const bgContainer = document.getElementById('bg-particles');
+    for (let i = 0; i < 20; i++) {
+        let drop = document.createElement('div');
+        drop.classList.add('water-drop');
+        drop.style.left = Math.random() * 100 + 'vw';
+        drop.style.width = Math.random() * 40 + 20 + 'px';
+        drop.style.height = drop.style.width;
+        drop.style.animationDuration = Math.random() * 5 + 5 + 's';
+        drop.style.animationDelay = Math.random() * 5 + 's';
+        bgContainer.appendChild(drop);
+    }
+</script>
+
 <!-- شريط الملاحة الفاخر -->
 <nav class="navbar navbar-luxury fade-in-up">
     <div class="container d-flex justify-content-between align-items-center">
         <a href="#" class="d-flex align-items-center gap-3 text-decoration-none">
-            <div class="brand-icon"><i class="fa-solid fa-droplet"></i></div>
+            <div class="brand-icon">
+                <svg viewBox="0 0 60 68" xmlns="http://www.w3.org/2000/svg">
+                    <circle cx="30" cy="6"  r="2.1" fill="#bae6fd"/>
+                    <circle cx="26.3" cy="13" r="2.3" fill="#bae6fd"/>
+                    <circle cx="33.7" cy="13" r="2.3" fill="#93c5fd"/>
+                    <circle cx="22.6" cy="20" r="2.6" fill="#93c5fd"/>
+                    <circle cx="30"   cy="20" r="2.6" fill="#7dd3fc"/>
+                    <circle cx="37.4" cy="20" r="2.6" fill="#60a5fa"/>
+                    <circle cx="18.9" cy="27" r="2.9" fill="#7dd3fc"/>
+                    <circle cx="26.3" cy="27" r="2.9" fill="#60a5fa"/>
+                    <circle cx="33.7" cy="27" r="2.9" fill="#4492d4"/>
+                    <circle cx="41.1" cy="27" r="2.9" fill="#3b82f6"/>
+                    <circle cx="15.2" cy="34" r="3.3" fill="#60a5fa"/>
+                    <circle cx="22.6" cy="34" r="3.3" fill="#4492d4"/>
+                    <circle cx="30"   cy="34" r="3.3" fill="#3b82f6"/>
+                    <circle cx="37.4" cy="34" r="3.3" fill="#2563eb"/>
+                    <circle cx="44.8" cy="34" r="3.3" fill="#1d4ed8"/>
+                    <circle cx="18.9" cy="41" r="3.6" fill="#2563eb"/>
+                    <circle cx="26.3" cy="41" r="3.6" fill="#1d4ed8"/>
+                    <circle cx="33.7" cy="41" r="3.6" fill="#bae6fd"/>
+                    <circle cx="41.1" cy="41" r="3.6" fill="#bae6fd"/>
+                    <circle cx="22.6" cy="48" r="3.8" fill="#7dd3fc"/>
+                    <circle cx="30"   cy="48" r="3.8" fill="#e0f2fe"/>
+                    <circle cx="37.4" cy="48" r="3.8" fill="#7dd3fc"/>
+                    <circle cx="26.3" cy="55" r="3.9" fill="#e0f2fe"/>
+                    <circle cx="33.7" cy="55" r="3.9" fill="#e0f2fe"/>
+                </svg>
+            </div>
             <div>
                 <div class="fw-black fs-4" style="color: var(--nwc-navy); line-height: 1.1;">قطــرة</div>
                 <div class="text-muted" style="font-size: 0.85rem; font-weight: 800;">بوابة الخدمات الموحدة</div>
@@ -278,39 +381,23 @@ function getStatusBadge($status) {
 
 <div class="container pb-5 mt-4">
     
-    <!-- منطقة الترحيب الملونة بالإشكال الهندسية (Hero Banner) -->
+    <!-- منطقة الترحيب (نص فقط على الخلفية المتحركة الأصلية بدون صندوق خاص) -->
     <div class="row mb-5 fade-in-up delay-1">
         <div class="col-12">
-            <div class="hero-banner">
-                <!-- الأشكال العائمة -->
-                <div class="shape shape-1"></div>
-                <div class="shape shape-2"></div>
-                <div class="shape shape-3"></div>
-                <div class="shape shape-4"></div>
-
-                <div style="z-index: 1; position: relative;">
-                    <div class="d-flex align-items-center mb-3" style="gap: 15px;">
-                        <div style="background: rgba(255,255,255,0.15); padding: 12px 16px; border-radius: 16px; backdrop-filter: blur(5px); box-shadow: 0 4px 15px rgba(0,0,0,0.1);">
-                            <i class="fa-solid fa-hand-sparkles" style="color: #fde047; font-size: 2rem;"></i>
-                        </div>
+            <div class="hero-plain">
+                <div class="hero-flex-row">
+                    <div class="hero-text-box">
                         <h1 class="fw-black m-0" style="color: white; font-size: 2.2rem;">
-                            أهلاً بك، <span class="text-gradient"><?= htmlspecialchars($customer['full_name'] ?? $customerName); ?></span> 
-                            <i class="fa-solid fa-seedling ms-2" style="color: #34d399; font-size: 1.8rem; text-shadow: 0 0 10px rgba(52, 211, 153, 0.4);"></i>
+                            أهلاً بك، <span class="hero-name"><?= htmlspecialchars($customer['full_name'] ?? $customerName); ?></span>
                         </h1>
+                        <p class="mb-0 fs-5 mt-3" style="color: #cbd5e1; line-height: 1.8; font-weight: 500;">
+                            نحن هنا لخدمتك! <span style="color: #93c5fd;">قطرة</span> تقدم لك تجربة رقمية استثنائية لطلب وإدارة خدمات المياه والصرف الصحي لعقاراتك بكل سهولة وشفافية.
+                        </p>
                     </div>
-                    <p class="mb-0 fs-5 mt-3" style="color: #cbd5e1; max-width: 600px; line-height: 1.8; font-weight: 500;">
-                        نحن هنا لخدمتك! <span style="color: #93c5fd;">قطرة</span> تقدم لك تجربة رقمية استثنائية لطلب وإدارة خدمات المياه والصرف الصحي لعقاراتك بكل سهولة وشفافية 💧🌍.
-                    </p>
-                </div>
-                
-                <div class="hero-stats d-none d-lg-flex">
-                    <div class="stat-box">
-                        <h3><?= $stats['total']; ?></h3>
-                        <p>إجمالي الطلبات <i class="fa-solid fa-chart-pie ms-1" style="color:#fbbf24;"></i></p>
-                    </div>
-                    <div class="stat-box" style="background: rgba(16, 185, 129, 0.2); border-color: rgba(16, 185, 129, 0.4);">
-                        <h3 style="color: #6ee7b7;"><?= $stats['completed']; ?></h3>
-                        <p style="color: #d1fae5;">طلبات مكتملة <i class="fa-solid fa-check-double ms-1"></i></p>
+                    <div class="hero-count-pill">
+                        <i class="fa-solid fa-layer-group"></i>
+                        <span class="hero-count-number"><?= $stats['total']; ?></span>
+                        <span class="hero-count-label">إجمالي الطلبات</span>
                     </div>
                 </div>
             </div>
@@ -331,7 +418,7 @@ function getStatusBadge($status) {
                     <input type="hidden" name="longitude" id="longitude" value="">
                     
                     <div class="mb-4">
-                        <label class="form-label">الخدمة المطلوبة <span style="color: #009FE3;">●</span></label>
+                        <label class="form-label">الخدمة المطلوبة <span class="required-mark">*</span></label>
                         <select name="srv_id" class="form-select" required>
                             <option value="" selected disabled>-- اختر نوع الخدمة --</option>
                             <?php foreach($services as $srv): ?>
@@ -341,7 +428,7 @@ function getStatusBadge($status) {
                     </div>
 
                     <div class="mb-4">
-                        <label class="form-label">المدينة المرتبطة بالعقار <span style="color: #009FE3;">●</span></label>
+                        <label class="form-label">المدينة المرتبطة بالعقار <span class="required-mark">*</span></label>
                         <select name="cty_id" id="citySelect" class="form-select" required onchange="unlockMap()">
                             <option value="" selected disabled>-- اختر المدينة لتفعيل الخريطة --</option>
                             <?php 
@@ -350,7 +437,7 @@ function getStatusBadge($status) {
                                 if ($currentRegion != $city['reg_name']) {
                                     if ($currentRegion != '') echo '</optgroup>';
                                     $currentRegion = $city['reg_name'];
-                                    echo '<optgroup label="📍 منطقة ' . htmlspecialchars($currentRegion) . '">';
+                                    echo '<optgroup label="منطقة ' . htmlspecialchars($currentRegion) . '">';
                                 }
                             ?>
                                 <option value="<?= $city['cty_id']; ?>" data-city="<?= htmlspecialchars($city['cty_name']); ?>">&nbsp;&nbsp;&nbsp;مدينة <?= htmlspecialchars($city['cty_name']); ?></option>
@@ -374,7 +461,7 @@ function getStatusBadge($status) {
                     </div>
 
                     <div class="mb-4">
-                        <label class="form-label">رقم صك الملكية (إلزامي) <span style="color: #10b981;">●</span></label>
+                        <label class="form-label">رقم صك الملكية (إلزامي) <span class="required-mark">*</span></label>
                         <div class="input-group" style="direction: ltr;">
                             <input type="text" name="deed_no" id="deedInput" class="form-control" style="text-align: right; border-radius: 0 16px 16px 0;" 
                                    placeholder="أدخل 12 رقماً" required minlength="12" maxlength="12" pattern="\d{12}" 
@@ -387,7 +474,7 @@ function getStatusBadge($status) {
                     </div>
 
                     <div class="mb-5">
-                        <label class="form-label">نسخة من الصك (إلزامي) <span style="color: #f59e0b;">●</span></label>
+                        <label class="form-label">نسخة من الصك (إلزامي) <span class="required-mark">*</span></label>
                         <div class="upload-box" id="uploadBox" onclick="document.getElementById('fileInput').click()">
                             <i class="fa-solid fa-cloud-arrow-up"></i>
                             <h6>انقر هنا لإرفاق ملف الصك</h6>
@@ -406,7 +493,7 @@ function getStatusBadge($status) {
 
         <!-- سجل الطلبات -->
         <div class="col-xl-7 col-lg-7 fade-in-up delay-3">
-            <div class="premium-card">
+            <div class="premium-card card-plain">
                 <div class="card-header-title">
                     <i class="fa-solid fa-clock-rotate-left"></i> السجل الشامل لطلباتك
                 </div>
@@ -458,7 +545,7 @@ function getStatusBadge($status) {
             </div>
             
             <div class="modal-body text-center px-4 pb-5 pt-0">
-                <div class="user-avatar mx-auto mb-3" style="width: 90px; height: 90px; font-size: 3rem; background: linear-gradient(135deg, var(--nwc-blue), var(--nwc-navy)); color: white; border-radius: 50%; display: flex; align-items: center; justify-content: center; box-shadow: 0 10px 25px rgba(0, 159, 227, 0.3);">
+                <div class="user-avatar mx-auto mb-3" style="width: 90px; height: 90px; font-size: 3rem; background: linear-gradient(135deg, var(--nwc-navy), var(--nwc-blue)); color: white; border-radius: 50%; display: flex; align-items: center; justify-content: center; box-shadow: 0 10px 25px rgba(9, 46, 84, 0.3);">
                     <i class="fa-solid fa-user-tie"></i>
                 </div>
                 
@@ -574,13 +661,13 @@ document.getElementById('applicationForm').addEventListener('submit', function(e
     e.preventDefault();
     
     if(document.getElementById('latitude').value === "") {
-        Swal.fire({ icon: 'warning', title: 'خطوة مفقودة', text: 'يرجى تحديد موقع العقار على الخريطة.', confirmButtonColor: '#002d5c' });
+        Swal.fire({ icon: 'warning', title: 'خطوة مفقودة', text: 'يرجى تحديد موقع العقار على الخريطة.', confirmButtonColor: '#092e54' });
         return;
     }
     
     let deedVal = document.getElementById('deedInput').value;
     if(deedVal.length !== 12) {
-        Swal.fire({ icon: 'error', title: 'إدخال خاطئ', text: 'رقم الصك يجب أن يكون 12 رقماً بالضبط.', confirmButtonColor: '#002d5c' });
+        Swal.fire({ icon: 'error', title: 'إدخال خاطئ', text: 'رقم الصك يجب أن يكون 12 رقماً بالضبط.', confirmButtonColor: '#092e54' });
         return;
     }
     
@@ -592,7 +679,7 @@ document.getElementById('applicationForm').addEventListener('submit', function(e
     fetch('dashboard.php', { method: 'POST', body: new FormData(this) })
     .then(r => r.json()).then(data => {
         if(data.status === 'error') {
-            Swal.fire({ icon: 'error', title: 'عذراً', text: data.message, confirmButtonColor: '#002d5c' }).then(() => { submitBtn.disabled = false; });
+            Swal.fire({ icon: 'error', title: 'عذراً', text: data.message, confirmButtonColor: '#092e54' }).then(() => { submitBtn.disabled = false; });
         } else {
             Swal.fire({ icon: 'success', title: 'عملية ناجحة', text: data.message, confirmButtonColor: '#10b981' }).then(() => { window.location.reload(); });
         }
