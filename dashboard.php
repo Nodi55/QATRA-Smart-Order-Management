@@ -398,7 +398,7 @@ function getStatusBadge($status) {
                     </div>
 
                     <button type="submit" class="btn-brand" id="submitBtn">
-                        إرسال الطلب واعتماده <i class="fa-solid fa-paper-plane text-info"></i>
+                        إرسال الطلب  <i class="fa-solid fa-paper-plane text-info"></i>
                     </button>
                 </form>
             </div>

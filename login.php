@@ -35,7 +35,6 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
             $custId = $customer['cust_id'];
             $otpCode = rand(100000, 999999);
 
-            // تم تعديل وقت الانتهاء ليكون دقيقتين فقط (INTERVAL 2 MINUTE)
             try {
                 $stmtOtp = $pdo->prepare("INSERT INTO otp_code (code, expiry_time, is_used, cust_id) VALUES (?, DATE_ADD(NOW(), INTERVAL 2 MINUTE), 0, ?)");
                 $stmtOtp->execute([$otpCode, $custId]);
@@ -71,6 +70,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800;900&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
     
     <style>
         :root { --nwc-navy: #002d5c; --nwc-blue: #009FE3; --bg-color: #f4f7f9; }
@@ -133,11 +133,24 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
             
             <div class="text-center mt-4 fw-bold">
                 <span class="text-muted">ليس لديك حساب؟</span> 
-                <a href="register.php" class="text-decoration-none" style="color: var(--nwc-blue);">إنشاء حساب جديد</a>
+                <!-- التعديل هنا: توجيه المستخدم إلى customer_register.php -->
+                <a href="customer_register.php" class="text-decoration-none" style="color: var(--nwc-blue);">إنشاء حساب جديد</a>
             </div>
         </div>
     </div>
 </div>
 
-</body>
-</html>
+<!-- رسالة الترحيب المنبثقة عند النجاح في التسجيل والتحويل لهذه الصفحة -->
+<?php if(isset($_GET['registered']) && $_GET['registered'] == 'success'): ?>
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        Swal.fire({
+            icon: 'success',
+            title: 'مرحباً بك في قطرة!',
+            text: 'تم إنشاء حسابك بنجاح، يمكنك الآن تسجيل الدخول بهويتك.',
+            confirmButtonColor: '#009FE3',
+            backdrop: `rgba(0,45,92,0.4)`
+        });
+    });
+</script>
+<?php endif; ?>
