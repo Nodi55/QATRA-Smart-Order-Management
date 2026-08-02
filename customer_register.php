@@ -117,6 +117,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
         }
         .brand-text-en { font-size: 1.4rem; font-weight: 900; letter-spacing: 2px; }
         .brand-text-ar { font-size: 0.9rem; font-weight: 600; color: #bae6fd; }
+        .brand-mark { width: 34px; height: 40px; flex-shrink: 0; }
         
         /* زر دخول الموظفين */
         .btn-employee {
@@ -245,8 +246,40 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
                 <div class="brand-text-en">QATRA</div>
                 <div class="brand-text-ar">قطرة</div>
             </div>
-            <!-- محاكاة لشعار قطرة النقطي بالأيقونات -->
-            <i class="fa-solid fa-droplet" style="font-size: 2.5rem; color: #7dd3fc;"></i>
+            <!-- شعار قطرة الرسمي: قطرة مكونة من نقاط بتدرج لوني -->
+            <svg class="brand-mark" viewBox="0 0 60 68" xmlns="http://www.w3.org/2000/svg">
+                <circle cx="30" cy="6"  r="2.1" fill="#bae6fd"/>
+
+                <circle cx="26.3" cy="13" r="2.3" fill="#bae6fd"/>
+                <circle cx="33.7" cy="13" r="2.3" fill="#93c5fd"/>
+
+                <circle cx="22.6" cy="20" r="2.6" fill="#93c5fd"/>
+                <circle cx="30"   cy="20" r="2.6" fill="#7dd3fc"/>
+                <circle cx="37.4" cy="20" r="2.6" fill="#60a5fa"/>
+
+                <circle cx="18.9" cy="27" r="2.9" fill="#7dd3fc"/>
+                <circle cx="26.3" cy="27" r="2.9" fill="#60a5fa"/>
+                <circle cx="33.7" cy="27" r="2.9" fill="#4492d4"/>
+                <circle cx="41.1" cy="27" r="2.9" fill="#3b82f6"/>
+
+                <circle cx="15.2" cy="34" r="3.3" fill="#60a5fa"/>
+                <circle cx="22.6" cy="34" r="3.3" fill="#4492d4"/>
+                <circle cx="30"   cy="34" r="3.3" fill="#3b82f6"/>
+                <circle cx="37.4" cy="34" r="3.3" fill="#2563eb"/>
+                <circle cx="44.8" cy="34" r="3.3" fill="#1d4ed8"/>
+
+                <circle cx="18.9" cy="41" r="3.6" fill="#2563eb"/>
+                <circle cx="26.3" cy="41" r="3.6" fill="#1d4ed8"/>
+                <circle cx="33.7" cy="41" r="3.6" fill="#0b457f"/>
+                <circle cx="41.1" cy="41" r="3.6" fill="#0b457f"/>
+
+                <circle cx="22.6" cy="48" r="3.8" fill="#0b457f"/>
+                <circle cx="30"   cy="48" r="3.8" fill="#083761"/>
+                <circle cx="37.4" cy="48" r="3.8" fill="#0b457f"/>
+
+                <circle cx="26.3" cy="55" r="3.9" fill="#062a4d"/>
+                <circle cx="33.7" cy="55" r="3.9" fill="#062a4d"/>
+            </svg>
         </a>
     </div>
 
