@@ -156,6 +156,7 @@ require_once 'db_connect.php';
         </h1>
         <p class="fade-up delay-2 text-lg md:text-xl text-white/85 leading-relaxed max-w-2xl mx-auto mb-10">
             رحلة رقمية لتقديم ومتابعة طلبات خدمات المياه والصرف الصحي،
+            بدعم من الذكاء الاصطناعي وتوزيع الفنيين الآلي.
         </p>
         <div class="fade-up delay-3 flex flex-col sm:flex-row gap-4 justify-center">
             <a href="#portals" class="btn-primary-water text-white font-bold px-8 py-3.5 rounded-xl inline-flex items-center justify-center gap-2 shadow-lg">
