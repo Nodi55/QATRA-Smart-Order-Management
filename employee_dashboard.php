@@ -14,20 +14,27 @@ if (empty($_SESSION['emp_roles'])) {
 }
 
 $empName = $_SESSION['emp_name'];
-// فلترة الصلاحيات المكررة لضمان ظهور 4 مساحات عمل فقط كحد أقصى
+
+// =========================================================
+// قراءة صارمة للصلاحيات من قاعدة البيانات (بدون أي توسعة برمجية)
+// =========================================================
 $roles = array_unique($_SESSION['emp_roles']); 
 
+// =========================================================
 // التوجيه عند الضغط على إحدى الصلاحيات
+// =========================================================
 if (isset($_GET['active_role']) && in_array($_GET['active_role'], $roles)) {
     $_SESSION['current_active_role'] = $_GET['active_role'];
     
-    if ($_GET['active_role'] == 'Admin') header("Location: admin_panel.php");
-    elseif ($_GET['active_role'] == 'Auditor') header("Location: auditor_panel.php");
-    elseif ($_GET['active_role'] == 'Inspection Technician') header("Location: inspection_panel.php");
-    elseif ($_GET['active_role'] == 'Installation Technician') header("Location: installation_panel.php");
+    $role = $_GET['active_role'];
+    if ($role == 'Admin') header("Location: admin_panel.php");
+    elseif ($role == 'Auditor') header("Location: auditor_panel.php");
+    elseif ($role == 'Inspection Technician') header("Location: inspection_panel.php");
+    elseif ($role == 'Installation Technician') header("Location: installation_panel.php");
     exit;
 }
 ?>
+
 <!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
@@ -40,15 +47,12 @@ if (isset($_GET['active_role']) && in_array($_GET['active_role'], $roles)) {
     <style>
         :root { --qatra-navy: #092e54; --qatra-blue: #0b457f; --bg-color: #f4f7f6; }
         body { font-family: 'Cairo', sans-serif; background-color: var(--bg-color); margin: 0; min-height: 100vh; display: flex; flex-direction: column; }
-        
         .header { background: white; border-bottom: 2px solid var(--qatra-blue); padding: 15px 5%; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 4px 10px rgba(0,0,0,0.05); }
         .header .brand { color: var(--qatra-navy); font-weight: 800; font-size: 1.5rem; display: flex; align-items: center; gap: 10px; }
         .btn-logout { border: 1px solid #dc3545; color: #dc3545; padding: 8px 20px; border-radius: 8px; font-weight: 700; text-decoration: none; transition: 0.3s; }
         .btn-logout:hover { background: #dc3545; color: white; }
-
         .welcome-section { text-align: center; margin: 50px 0 40px; }
         .welcome-section h1 { color: var(--qatra-navy); font-weight: 800; }
-        
         .roles-grid { display: flex; flex-wrap: wrap; justify-content: center; gap: 20px; max-width: 1000px; margin: 0 auto; padding: 0 15px; }
         .role-card { background: white; border: 1px solid #e0e0e0; border-radius: 12px; padding: 40px 25px; width: 260px; text-align: center; text-decoration: none; transition: 0.3s; box-shadow: 0 4px 6px rgba(0,0,0,0.02); }
         .role-card:hover { transform: translateY(-5px); border-color: var(--qatra-blue); box-shadow: 0 10px 20px rgba(11,69,127,0.1); }
@@ -59,50 +63,48 @@ if (isset($_GET['active_role']) && in_array($_GET['active_role'], $roles)) {
     </style>
 </head>
 <body>
+    <div class="header">
+        <div class="brand"><i class="fa-solid fa-droplet text-primary"></i> نظام قطرة المؤسسي</div>
+        <a href="logout.php" class="btn-logout">خروج <i class="fa-solid fa-arrow-right-from-bracket ms-1"></i></a>
+    </div>
 
-<div class="header">
-    <div class="brand"><i class="fa-solid fa-droplet text-primary"></i> نظام قطرة المؤسسي</div>
-    <a href="logout.php" class="btn-logout">خروج <i class="fa-solid fa-arrow-right-from-bracket ms-1"></i></a>
-</div>
+    <div class="welcome-section">
+        <h1>أهلاً بك، المهندس/ة <?= htmlspecialchars($empName); ?></h1>
+        <p class="text-muted fw-bold">الرجاء اختيار مساحة العمل المراد الدخول إليها</p>
+    </div>
 
-<div class="welcome-section">
-    <h1>أهلاً بك، المهندس/ة <?= htmlspecialchars($empName); ?></h1>
-    <p class="text-muted fw-bold">الرجاء اختيار مساحة العمل المراد الدخول إليها</p>
-</div>
+    <div class="roles-grid">
+        <?php if(in_array('Admin', $roles)): ?>
+        <a href="?active_role=Admin" class="role-card">
+            <div class="role-icon"><i class="fa-solid fa-user-shield"></i></div>
+            <div class="role-title">مدير النظام</div>
+            <div class="role-desc">إدارة الموظفين، المهام الشاملة، وإحصائيات كادر العمل.</div>
+        </a>
+        <?php endif; ?>
 
-<div class="roles-grid">
-    <?php if(in_array('Admin', $roles)): ?>
-    <a href="?active_role=Admin" class="role-card">
-        <div class="role-icon"><i class="fa-solid fa-user-shield"></i></div>
-        <div class="role-title">مدير النظام</div>
-        <div class="role-desc">إدارة الموظفين، المهام الشاملة، وإحصائيات كادر العمل.</div>
-    </a>
-    <?php endif; ?>
+        <?php if(in_array('Auditor', $roles)): ?>
+        <a href="?active_role=Auditor" class="role-card">
+            <div class="role-icon"><i class="fa-solid fa-file-signature"></i></div>
+            <div class="role-title">مدقق الطلبات</div>
+            <div class="role-desc">مراجعة صكوك الملكية والطلبات المعلقة للعملاء.</div>
+        </a>
+        <?php endif; ?>
 
-    <?php if(in_array('Auditor', $roles)): ?>
-    <a href="?active_role=Auditor" class="role-card">
-        <div class="role-icon"><i class="fa-solid fa-file-signature"></i></div>
-        <div class="role-title">مدقق الطلبات</div>
-        <div class="role-desc">مراجعة صكوك الملكية والطلبات المعلقة للعملاء.</div>
-    </a>
-    <?php endif; ?>
+        <?php if(in_array('Inspection Technician', $roles)): ?>
+        <a href="?active_role=Inspection Technician" class="role-card">
+            <div class="role-icon"><i class="fa-solid fa-clipboard-check"></i></div>
+            <div class="role-title">فني فحص</div>
+            <div class="role-desc">إجراء الفحص الميداني للموقع ورفع الصور للطلبات.</div>
+        </a>
+        <?php endif; ?>
 
-    <?php if(in_array('Inspection Technician', $roles)): ?>
-    <a href="?active_role=Inspection Technician" class="role-card">
-        <div class="role-icon"><i class="fa-solid fa-clipboard-check"></i></div>
-        <div class="role-title">فني فحص</div>
-        <div class="role-desc">إجراء الفحص الميداني للموقع ورفع الصور للطلبات.</div>
-    </a>
-    <?php endif; ?>
-
-    <?php if(in_array('Installation Technician', $roles)): ?>
-    <a href="?active_role=Installation Technician" class="role-card">
-        <div class="role-icon"><i class="fa-solid fa-wrench"></i></div>
-        <div class="role-title">فني تركيب</div>
-        <div class="role-desc">استلام مهام التركيب للعدادات وتسجيل القراءات.</div>
-    </a>
-    <?php endif; ?>
-</div>
-
+        <?php if(in_array('Installation Technician', $roles)): ?>
+        <a href="?active_role=Installation Technician" class="role-card">
+            <div class="role-icon"><i class="fa-solid fa-wrench"></i></div>
+            <div class="role-title">فني تركيب</div>
+            <div class="role-desc">استلام مهام التركيب للعدادات وتسجيل القراءات.</div>
+        </a>
+        <?php endif; ?>
+    </div>
 </body>
 </html>

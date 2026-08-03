@@ -4,12 +4,12 @@ ini_set('display_errors', 1);
 session_start();
 
 // =====================================================================
-// نظام تسجيل الخروج المدمج (يعيدك للصفحة الرئيسية)
+// نظام تسجيل الخروج المدمج
 // =====================================================================
 if (isset($_GET['logout'])) {
     session_unset();
     session_destroy();
-    header("Location: login.php"); // يمكنك تغييرها إلى index.php إذا كانت هي الرئيسية لديك
+    header("Location: login.php");
     exit;
 }
 
@@ -17,46 +17,49 @@ header('Content-Type: text/html; charset=utf-8');
 
 // الاتصال بقاعدة البيانات
 if (!file_exists('db_connect.php')) {
-    die("<div style='display:flex; justify-content:center; align-items:center; height:100vh; background:#f8fafc; font-family:Cairo, sans-serif;'>
-            <h2 style='color:#ef4444; background:white; padding:30px; border-radius:15px; box-shadow:0 10px 25px rgba(0,0,0,0.1); border-top:5px solid #ef4444;'>
-            <i class='fa-solid fa-triangle-exclamation'></i> ملف db_connect.php غير موجود.</h2>
-         </div>");
+    die("ملف db_connect.php غير موجود.");
 }
 require_once 'db_connect.php';
 
 // التحقق من تسجيل الدخول
 if (!isset($_SESSION['customer_national_id'])) {
-    die("<div style='display:flex; justify-content:center; align-items:center; height:100vh; background:#f8fafc; font-family:Cairo, sans-serif; direction:rtl;'>
-            <div style='text-align:center; background:white; padding:40px; border-radius:20px; box-shadow:0 15px 35px rgba(9,46,84,0.1); border-top:5px solid #092e54;'>
-                <h2 style='color:#092e54; margin-bottom:15px;'>جلسة غير صالحة</h2>
-                <p style='color:#64748b; font-size:1.1rem;'>الرجاء تسجيل الدخول أولاً للوصول إلى البوابة الذكية.</p>
-                <a href='login.php' style='display:inline-block; margin-top:20px; padding:12px 30px; background:#4492d4; color:white; text-decoration:none; border-radius:50px; font-weight:bold;'>العودة لتسجيل الدخول</a>
-            </div>
-         </div>");
+    header("Location: login.php");
+    exit;
 }
 
 $nationalId = $_SESSION['customer_national_id'];
 $customerName = $_SESSION['customer_name'] ?? 'عميلنا العزيز';
 
-// جلب بيانات العميل (بحروف صغيرة)
+// جلب بيانات العميل الأساسية
 $stmt = $pdo->prepare("SELECT cust_id, full_name, phone_number FROM customer WHERE national_id = ?");
 $stmt->execute([$nationalId]);
 $customer = $stmt->fetch(PDO::FETCH_ASSOC);
 
 if (!$customer) {
-    die("<h3 style='text-align:center; color:red; margin-top:50px; font-family:Cairo;'>عفواً، لم يتم العثور على بيانات العميل.</h3>");
+    die("<h3 style='text-align:center; color:red; margin-top:50px; font-family:Cairo'>عفواً، لم يتم العثور على بيانات العميل.</h3>");
 }
 $custId = $customer['cust_id'];
 
 // =====================================================================
-// معالجة إرسال الطلب (مع التحقق من الـ 12 رقم والصورة)
+// إضافة مدينة "الربيعية" لقاعدة البيانات برمجياً (تنفذ مرة واحدة فقط)
+// =====================================================================
+try {
+    $checkCity = $pdo->query("SELECT COUNT(*) FROM city WHERE cty_name = 'الربيعية'")->fetchColumn();
+    if ($checkCity == 0) {
+        $pdo->exec("INSERT INTO city (cty_name, reg_id) VALUES ('الربيعية', 1)"); 
+    }
+} catch (Exception $e) {}
+
+
+// =====================================================================
+// معالجة إرسال الطلب (DSS، منع التكرار، وثبات موقع العقار)
 // =====================================================================
 if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['is_ajax'])) {
     header('Content-Type: application/json');
-    
-    $srvId = $_POST['srv_id']; 
-    $cityId = $_POST['cty_id']; 
-    $deedNumber = trim($_POST['deed_no']); 
+
+    $originalSrvId = $_POST['srv_id']; // 1=مياه, 2=صرف, 3=مياه وصرف
+    $cityId = $_POST['cty_id'];
+    $deedNumber = trim($_POST['deed_no']);
     $lat = !empty($_POST['latitude']) ? $_POST['latitude'] : null;
     $lng = !empty($_POST['longitude']) ? $_POST['longitude'] : null;
 
@@ -71,56 +74,137 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['is_ajax'])) {
     }
 
     try {
-        $checkMoj = $pdo->prepare("SELECT COUNT(*) FROM moj_record WHERE deed_no = ?");
-        $checkMoj->execute([$deedNumber]);
-        if ($checkMoj->fetchColumn() == 0) {
-            echo json_encode(['status' => 'error', 'message' => 'عفواً، رقم الصك المدخل غير متطابق مع سجلات وزارة العدل.']);
+        // --- 1. التحقق من ثبات الموقع ومنع التكرار (Location & Duplication Check) ---
+        $servicesToCreate = [];
+        if ($originalSrvId == 3) {
+            $servicesToCreate = [2, 3]; // 1: مياه، 2: صرف صحي
+        } else {
+            $servicesToCreate = [$originalSrvId];
+        }
+
+        // جلب الطلبات السابقة لنفس الصك لمعرفة المدينة والخدمات المطلوبة
+        $checkExisting = $pdo->prepare("SELECT a.srv_id, a.cty_id, c.cty_name FROM application a JOIN city c ON a.cty_id = c.cty_id WHERE a.deed_no = ? AND a.app_status != 'Rejected'");
+        $checkExisting->execute([$deedNumber]);
+        $existingRecords = $checkExisting->fetchAll(PDO::FETCH_ASSOC);
+
+        $existingSrvIds = [];
+        
+        foreach ($existingRecords as $rec) {
+            // التحقق من ثبات الموقع (إذا اختلف موقع الصك المدخل عن المسجل سابقاً يتم الرفض فوراً)
+            if ($rec['cty_id'] != $cityId) {
+                echo json_encode(['status' => 'error', 'message' => 'عفواً، تم رفض الطلب آلياً. هذا الصك مسجل مسبقاً في النظام لمدينة ('. htmlspecialchars($rec['cty_name']) .'). لا يمكن تقديم طلب لنفس العقار في مدينة أخرى، لأن موقع الصك لا يتغير.']);
+                exit;
+            }
+            $existingSrvIds[] = $rec['srv_id'];
+        }
+
+        $finalServicesToCreate = [];
+        $duplicateServicesCount = 0;
+
+        foreach ($servicesToCreate as $sId) {
+            if (!in_array($sId, $existingSrvIds)) {
+                $finalServicesToCreate[] = $sId;
+            } else {
+                $duplicateServicesCount++;
+            }
+        }
+
+        // إذا كانت جميع الخدمات التي اختارها موجودة مسبقاً
+        if (empty($finalServicesToCreate)) {
+            echo json_encode(['status' => 'error', 'message' => 'عفواً، يوجد طلب سابق (نشط أو مكتمل) لنفس الخدمة على هذا الصك. لا يمكن تكرار الطلب.']);
             exit;
         }
+
+        // --- 2. التحقق من وزارة العدل (DSS) ---
+        $checkMoj = $pdo->prepare("SELECT owner_national_id, owner_name FROM moj_record WHERE deed_no = ?");
+        $checkMoj->execute([$deedNumber]);
+        $mojData = $checkMoj->fetch(PDO::FETCH_ASSOC);
+
+        if (!$mojData) {
+            echo json_encode(['status' => 'error', 'message' => 'عفواً، رقم الصك المدخل غير موجود في سجلات وزارة العدل.']);
+            exit;
+        }
+
+        $appStatus = ''; 
+        $statusMessage = '';
+        $rejectionReason = null;
+
+        if ($mojData['owner_national_id'] !== $nationalId) {
+            $appStatus = 'Rejected';
+            $statusMessage = 'تم رفض الطلب آلياً: رقم الهوية الخاص بك لا يطابق رقم هوية مالك الصك في سجلات وزارة العدل.';
+            $rejectionReason = 'رفض آلي عبر DSS: عدم تطابق الهوية الوطنية.';
+        } elseif (trim($mojData['owner_name']) !== trim($customer['full_name'])) {
+            $appStatus = 'Pending_Review';
+            $statusMessage = 'تم استلام طلبك بنجاح. نظراً لوجود اختلاف في تهجئة الاسم بين حسابك والصك، تمت إحالة الطلب للمراجعة اليدوية.';
+        } else {
+            $appStatus = 'Pending_Inspection';
+            $statusMessage = 'تطابق آلي 100%! تم التحقق من الصك والملكية بنجاح، وتحويل طلبك مباشرة للفحص الميداني.';
+        }
+
+        // --- 3. معالجة الملف المرفق والحفظ ---
+        $fileTmpPath = $_FILES['deed_file']['tmp_name'];
+        $hashedFileName = md5(time() . $custId) . '.' . pathinfo($_FILES['deed_file']['name'], PATHINFO_EXTENSION);
+        $targetDir = "uploads/";
+        if (!is_dir($targetDir)) @mkdir($targetDir, 0777, true);
+        $targetFilePath = $targetDir . $hashedFileName;
+
+        if (move_uploaded_file($fileTmpPath, $targetFilePath)) {
+            
+            foreach ($finalServicesToCreate as $currentSrvId) {
+                // حفظ الطلب في قاعدة البيانات 
+                $q = "INSERT INTO application (cty_id, latitude, longitude, deed_no, deed_file_url, app_status, cust_id, srv_id) 
+                      VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
+                $pdo->prepare($q)->execute([$cityId, $lat, $lng, $deedNumber, $targetFilePath, $appStatus, $custId, $currentSrvId]);
+                $newAppId = $pdo->lastInsertId();
+
+                // تسجيل الحركة في جدول التتبع
+                $histQ = "INSERT INTO application_history (app_id, status, change_date, rejection_reason) VALUES (?, ?, NOW(), ?)";
+                $pdo->prepare($histQ)->execute([$newAppId, $appStatus, $rejectionReason]);
+            }
+
+            // إعداد رسالة النجاح المناسبة للعميل
+            if($appStatus == 'Rejected') {
+                 echo json_encode(['status' => 'error', 'message' => $statusMessage]);
+            } else {
+                 $finalMsg = $statusMessage;
+                 
+                 if (count($finalServicesToCreate) > 1) {
+                     $finalMsg = 'تم إنشاء الطلبات بنجاح. لفصل المهام وتسريع الإنجاز، تم تقسيم الخدمة إلى (طلب مياه) و (طلب صرف صحي) منفصلين. ' . $statusMessage;
+                 } 
+                 elseif ($duplicateServicesCount > 0) {
+                     $finalMsg = 'تم استبعاد الخدمة المكررة التي تم التقديم عليها سابقاً، وتم إنشاء طلب للخدمة الجديدة فقط. ' . $statusMessage;
+                 }
+
+                 echo json_encode(['status' => 'success', 'message' => $finalMsg]);
+            }
+        } else {
+            echo json_encode(['status' => 'error', 'message' => 'فشل في رفع المرفقات، يرجى المحاولة لاحقاً.']);
+        }
+        exit;
+
     } catch (PDOException $e) {
-        echo json_encode(['status' => 'error', 'message' => 'حدث خطأ في الاتصال بسجلات التحقق.']);
+        echo json_encode(['status' => 'error', 'message' => 'حدث خطأ في النظام أثناء معالجة الطلب.']);
         exit;
     }
-
-    $fileTmpPath = $_FILES['deed_file']['tmp_name'];
-    $hashedFileName = md5(time() . $custId) . '.' . pathinfo($_FILES['deed_file']['name'], PATHINFO_EXTENSION);
-    $targetDir = "uploads/";
-    if (!is_dir($targetDir)) @mkdir($targetDir, 0777, true);
-    $targetFilePath = $targetDir . $hashedFileName;
-
-    if (move_uploaded_file($fileTmpPath, $targetFilePath)) {
-        try {
-            $q = "INSERT INTO application (cty_id, latitude, longitude, deed_no, deed_file_url, app_status, cust_id, srv_id) 
-                  VALUES (?, ?, ?, ?, ?, 'Pending_Review', ?, ?)";
-            $pdo->prepare($q)->execute([$cityId, $lat, $lng, $deedNumber, $targetFilePath, $custId, $srvId]);
-            
-            echo json_encode(['status' => 'success', 'message' => 'تم استلام طلبك بنجاح وجاري مراجعته من قبل المختصين.']);
-        } catch (PDOException $e) {
-            echo json_encode(['status' => 'error', 'message' => 'حدث خطأ أثناء حفظ الطلب في النظام.']);
-        }
-    } else {
-        echo json_encode(['status' => 'error', 'message' => 'فشل في رفع المرفقات، يرجى المحاولة لاحقاً.']);
-    }
-    exit;
 }
 
 // =====================================================================
-// جلب البيانات الأساسية للواجهة
+// جلب البيانات للواجهة
 // =====================================================================
 $citiesWithRegions = []; $services = []; $myApplications = []; $stats = ['total' => 0, 'completed' => 0, 'in_progress' => 0];
 
 try {
-    $citiesWithRegions = $pdo->query("SELECT c.cty_id, c.cty_name, r.reg_name FROM city c JOIN region r ON c.reg_id = r.reg_id ORDER BY r.reg_id, c.cty_name")->fetchAll(PDO::FETCH_ASSOC);
+    $citiesWithRegions = $pdo->query("SELECT c.cty_id, c.cty_name, r.reg_name FROM city c JOIN region r ON c.reg_id = r.reg_id WHERE r.reg_name IN ('منطقة القصيم', 'منطقة حائل', 'منطقة الحدود الشمالية', 'منطقة الجوف') ORDER BY r.reg_id, c.cty_name")->fetchAll(PDO::FETCH_ASSOC);
     $services = $pdo->query("SELECT srv_id, srv_name FROM service_type")->fetchAll(PDO::FETCH_ASSOC);
 
     $appStmt = $pdo->prepare("SELECT a.app_id, s.srv_name, a.deed_no, a.app_status, a.created_at, c.cty_name 
                               FROM application a 
                               JOIN city c ON a.cty_id = c.cty_id 
-                              JOIN service_type s ON a.srv_id = s.srv_id
+                              JOIN service_type s ON a.srv_id = s.srv_id 
                               WHERE a.cust_id = ? ORDER BY a.created_at DESC");
     $appStmt->execute([$custId]);
     $myApplications = $appStmt->fetchAll(PDO::FETCH_ASSOC);
-    
+
     $stats['total'] = count($myApplications);
     foreach($myApplications as $app) {
         if($app['app_status'] == 'Completed') $stats['completed']++;
@@ -135,7 +219,7 @@ function getStatusBadge($status) {
         'Pending_Billing' => '<span class="status-badge badge-dark"><i class="fa-solid fa-file-invoice-dollar"></i> بانتظار السداد</span>',
         'In_Progress' => '<span class="status-badge badge-primary"><i class="fa-solid fa-person-digging"></i> جاري التنفيذ</span>',
         'Completed' => '<span class="status-badge badge-success"><i class="fa-solid fa-circle-check"></i> مكتمل</span>',
-        'Rejected' => '<span class="status-badge badge-danger"><i class="fa-solid fa-circle-xmark"></i> مرفوض</span>'
+        'Rejected' => '<span class="status-badge badge-danger"><i class="fa-solid fa-circle-xmark"></i> مرفوض آلياً</span>'
     ];
     return $badges[$status] ?? '<span class="status-badge badge-secondary">'.$status.'</span>';
 }
@@ -147,172 +231,62 @@ function getStatusBadge($status) {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>نظام قطرة | البوابة الذكية للعملاء</title>
-    <!-- الخطوط والمكتبات -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
-    <!-- الخريطة -->
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
-    
     <style>
-        :root { 
-            --nwc-navy: #092e54;    
-            --nwc-blue: #4492d4;    
-            --nwc-light: #eaf3fb;   
-            --bg-color: #092e54; 
-            --card-shadow: 0 25px 60px rgba(0, 0, 0, 0.25);
-        }
-        
+        :root { --nwc-navy: #092e54; --nwc-blue: #4492d4; --nwc-light: #eaf3fb; --bg-color: #092e54; --card-shadow: 0 25px 60px rgba(0,0,0,0.25); }
         body { font-family: 'Cairo', sans-serif; background-color: var(--bg-color); color: #334155; overflow-x: hidden; position: relative; }
-
-        /* --- خلفية متحركة احترافية بفقاعات مائية (مطابقة لصفحة الدخول) --- */
-        .bg-animation {
-            position: fixed;
-            top: 0; left: 0; width: 100%; height: 100%;
-            z-index: 0;
-            background: radial-gradient(circle at top right, #10599c 0%, var(--nwc-navy) 70%);
-            pointer-events: none;
-        }
-        .water-drop {
-            position: absolute;
-            bottom: -100px;
-            background: linear-gradient(180deg, rgba(125, 211, 252, 0.1) 0%, rgba(125, 211, 252, 0.4) 100%);
-            border-radius: 50%;
-            animation: floatUp infinite ease-in;
-            backdrop-filter: blur(5px);
-        }
-        @keyframes floatUp {
-            0% { transform: translateY(0) scale(0.8); opacity: 0; }
-            50% { opacity: 1; }
-            100% { transform: translateY(-120vh) scale(1.2); opacity: 0; }
-        }
+        .bg-animation { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 0; background: radial-gradient(circle at top right, #10599c 0%, var(--nwc-navy) 70%); pointer-events: none; }
+        .water-drop { position: absolute; bottom: -100px; background: linear-gradient(180deg, rgba(125, 211, 252, 0.1) 0%, rgba(125, 211, 252, 0.4) 100%); border-radius: 50%; animation: floatUp infinite ease-in; backdrop-filter: blur(5px); }
+        @keyframes floatUp { 0% { transform: translateY(0) scale(0.8); opacity: 0; } 50% { opacity: 1; } 100% { transform: translateY(-120vh) scale(1.2); opacity: 0; } }
         .container { position: relative; z-index: 10; }
-
-        /* --- الأنيميشن --- */
         .fade-in-up { animation: fadeInUp 0.7s cubic-bezier(0.2, 0.8, 0.2, 1) forwards; opacity: 0; transform: translateY(20px); }
         .delay-1 { animation-delay: 0.1s; } .delay-2 { animation-delay: 0.2s; } .delay-3 { animation-delay: 0.3s; }
         @keyframes fadeInUp { to { opacity: 1; transform: translateY(0); } }
-
-        /* --- منطقة الترحيب: صندوقان منفصلان تماماً --- */
-        .hero-plain { padding: 10px 5px 25px; }
-        .hero-name { color: #7dd3fc; font-weight: 900; }
-        .hero-flex-row {
-            display: flex; align-items: stretch; flex-wrap: wrap; gap: 18px;
-        }
-        .hero-text-box {
-            flex: 1 1 400px;
-            background: rgba(255,255,255,0.05);
-            border: 1px solid rgba(255,255,255,0.15);
-            border-radius: 20px; padding: 24px 28px;
-            backdrop-filter: blur(8px);
-        }
-        .hero-count-pill {
-            display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
-            flex: 0 0 auto; min-width: 160px;
-            background: rgba(255,255,255,0.05);
-            border: 1px solid rgba(255,255,255,0.15);
-            border-radius: 20px; padding: 20px 28px;
-            backdrop-filter: blur(8px);
-        }
-        .hero-count-pill i { color: #7dd3fc; font-size: 1.6rem; }
-        .hero-count-pill .hero-count-number { color: #ffffff; font-weight: 900; font-size: 2.3rem; line-height: 1; }
-        .hero-count-pill .hero-count-label { color: #cbd5e1; font-weight: 700; font-size: 0.9rem; }
-        @media (max-width: 576px) {
-            .hero-text-box h1 { font-size: 1.5rem !important; }
-            .hero-count-pill { flex-direction: row; width: 100%; min-width: 0; }
-        }
-
-        /* --- الشريط العلوي --- */
-        .navbar-luxury { background: rgba(255, 255, 255, 0.97); backdrop-filter: blur(20px); padding: 15px 0; box-shadow: 0 15px 35px rgba(0, 0, 0, 0.25); border-bottom: 1px solid rgba(255, 255, 255, 0.2); position: sticky; top: 0; z-index: 1050; position: relative; }
-        .navbar-luxury::after {
-            content: ''; position: absolute; bottom: 0; left: 10%; width: 80%; height: 4px;
-            background: linear-gradient(90deg, transparent, var(--nwc-blue), transparent);
-        }
+        .hero-plain { padding: 10px 5px 25px; } .hero-name { color: #7dd3fc; font-weight: 900; }
+        .hero-flex-row { display: flex; align-items: stretch; flex-wrap: wrap; gap: 18px; }
+        .hero-text-box { flex: 1 1 400px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.15); border-radius: 20px; padding: 24px 28px; backdrop-filter: blur(8px); }
+        .hero-count-pill { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; flex: 0 0 auto; min-width: 160px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.15); border-radius: 20px; padding: 20px 28px; backdrop-filter: blur(8px); }
+        .hero-count-pill i { color: #7dd3fc; font-size: 1.6rem; } .hero-count-pill .hero-count-number { color: #ffffff; font-weight: 900; font-size: 2.3rem; line-height: 1; } .hero-count-pill .hero-count-label { color: #cbd5e1; font-weight: 700; font-size: 0.9rem; }
+        @media (max-width: 576px) { .hero-text-box h1 { font-size: 1.5rem !important; } .hero-count-pill { flex-direction: row; width: 100%; min-width: 0; } }
+        .navbar-luxury { background: rgba(255, 255, 255, 0.97); backdrop-filter: blur(20px); padding: 15px 0; box-shadow: 0 15px 35px rgba(0, 0, 0, 0.25); border-bottom: 1px solid rgba(255, 255, 255, 0.2); position: sticky; top: 0; z-index: 1050; }
+        .navbar-luxury::after { content: ''; position: absolute; bottom: 0; left: 10%; width: 80%; height: 4px; background: linear-gradient(90deg, transparent, var(--nwc-blue), transparent); }
         .brand-icon { background: linear-gradient(135deg, var(--nwc-navy), #0a1128); width: 50px; height: 50px; display: flex; align-items: center; justify-content: center; border-radius: 16px; box-shadow: 0 8px 20px rgba(9, 46, 84, 0.3); transition: transform 0.3s; }
-        .brand-icon:hover { transform: scale(1.05) rotate(-5deg); }
-        .brand-icon svg { width: 26px; height: 30px; }
+        .brand-icon:hover { transform: scale(1.05) rotate(-5deg); } .brand-icon svg { width: 26px; height: 30px; }
         .user-profile-badge { background: white; padding: 6px 20px 6px 6px; border-radius: 50px; font-weight: 700; color: var(--nwc-navy); border: 1px solid #e2e8f0; display: flex; align-items: center; gap: 12px; box-shadow: 0 4px 10px rgba(0,0,0,0.02); cursor: pointer; transition: 0.3s; }
-        .user-profile-badge:hover { background: #f8fafc; border-color: var(--nwc-blue); }
-        .user-avatar { width: 38px; height: 38px; background: var(--nwc-light); color: var(--nwc-blue); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 1.2rem; }
-        
-        /* تأثيرات زر تسجيل الخروج */
-        .btn-logout { transition: all 0.3s; width: 42px; height: 42px; display: flex; align-items: center; justify-content: center; }
-        .btn-logout:hover { background-color: #ef4444 !important; color: white !important; transform: rotate(90deg); }
-
-        /* --- حاويات المحتوى (بطاقة زجاجية مطابقة لتسجيل الدخول) --- */
-        .premium-card {
-            background: rgba(255, 255, 255, 0.97);
-            backdrop-filter: blur(20px);
-            border-radius: 24px; padding: 40px; box-shadow: var(--card-shadow);
-            border: 1px solid rgba(255,255,255,0.2); height: 100%; position: relative;
-        }
-        .premium-card::before {
-            content: ''; position: absolute; top: 0; left: 10%; width: 80%; height: 4px;
-            background: linear-gradient(90deg, transparent, var(--nwc-blue), transparent);
-            border-radius: 0 0 10px 10px;
-        }
-        /* بطاقة شفافة بدون خلفية أو حدود، وارتفاعها على قدر محتواها فقط */
-        .premium-card.card-plain {
-            background: transparent;
-            backdrop-filter: none;
-            box-shadow: none;
-            border: none;
-            height: auto;
-            padding: 40px 0;
-        }
-        .premium-card.card-plain::before { display: none; }
-        .premium-card.card-plain .card-header-title { color: #ffffff; border-bottom-color: rgba(255,255,255,0.15); }
-        .premium-card.card-plain .card-header-title i { background: rgba(255,255,255,0.1); color: #7dd3fc; }
-        .premium-card.card-plain .table-custom th { color: #93c5fd; border-bottom-color: rgba(255,255,255,0.15); }
-        .premium-card.card-plain .table-custom td { color: #eaf3fb; border-bottom-color: rgba(255,255,255,0.08); }
-        .premium-card.card-plain .empty-state-icon { background: rgba(255,255,255,0.1); color: #7dd3fc; }
-        .premium-card.card-plain .empty-state h4 { color: #ffffff; }
-        .premium-card.card-plain .empty-state p { color: #cbd5e1; }
+        .user-profile-badge:hover { background: #f8fafc; border-color: var(--nwc-blue); } .user-avatar { width: 38px; height: 38px; background: var(--nwc-light); color: var(--nwc-blue); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 1.2rem; }
+        .btn-logout { transition: all 0.3s; width: 42px; height: 42px; display: flex; align-items: center; justify-content: center; } .btn-logout:hover { background-color: #ef4444 !important; color: white !important; transform: rotate(90deg); }
+        .premium-card { background: rgba(255, 255, 255, 0.97); backdrop-filter: blur(20px); border-radius: 24px; padding: 40px; box-shadow: var(--card-shadow); border: 1px solid rgba(255,255,255,0.2); height: 100%; position: relative; }
+        .premium-card::before { content: ''; position: absolute; top: 0; left: 10%; width: 80%; height: 4px; background: linear-gradient(90deg, transparent, var(--nwc-blue), transparent); border-radius: 0 0 10px 10px; }
+        .premium-card.card-plain { background: transparent; backdrop-filter: none; box-shadow: none; border: none; height: auto; padding: 40px 0; } .premium-card.card-plain::before { display: none; }
+        .premium-card.card-plain .card-header-title { color: #ffffff; border-bottom-color: rgba(255,255,255,0.15); } .premium-card.card-plain .card-header-title i { background: rgba(255,255,255,0.1); color: #7dd3fc; }
+        .premium-card.card-plain .table-custom th { color: #93c5fd; border-bottom-color: rgba(255,255,255,0.15); } .premium-card.card-plain .table-custom td { color: #eaf3fb; border-bottom-color: rgba(255,255,255,0.08); }
         .card-header-title { color: var(--nwc-navy); font-weight: 900; font-size: 1.4rem; margin-bottom: 30px; display: flex; align-items: center; gap: 12px; border-bottom: 2px solid var(--nwc-light); padding-bottom: 15px; }
         .card-header-title i { background: var(--nwc-light); color: var(--nwc-blue); width: 45px; height: 45px; display: flex; align-items: center; justify-content: center; border-radius: 12px; font-size: 1.2rem; }
-
-        /* --- النماذج --- */
-        .form-label { font-weight: 800; color: #334155; font-size: 0.95rem; margin-bottom: 10px; }
-        .required-mark { color: #b91c1c; font-weight: 800; margin-inline-start: 2px; }
+        .form-label { font-weight: 800; color: #334155; font-size: 0.95rem; margin-bottom: 10px; } .required-mark { color: #b91c1c; font-weight: 800; margin-inline-start: 2px; }
         .form-control, .form-select { border-radius: 16px; border: 2px solid #e2e8f0; padding: 16px 20px; font-weight: 700; color: #1e293b; background: #f8fafc; transition: all 0.3s; font-size: 1rem; }
         .form-control:focus, .form-select:focus { border-color: var(--nwc-blue); background: white; box-shadow: 0 0 0 5px rgba(68, 146, 212, 0.15); outline: none; }
-        
-        /* --- الخريطة والرفع --- */
         .map-container { border: 2px solid #e2e8f0; border-radius: 20px; overflow: hidden; position: relative; height: 300px; box-shadow: inset 0 4px 10px rgba(0,0,0,0.05); }
         .map-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(248, 250, 252, 0.85); backdrop-filter: blur(8px); z-index: 1000; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--nwc-navy); transition: 0.4s; }
         .btn-gps { position: absolute; bottom: 20px; right: 20px; z-index: 1001; background: white; color: var(--nwc-navy); border: 2px solid white; padding: 12px 20px; border-radius: 16px; font-weight: 800; font-size: 0.95rem; box-shadow: 0 8px 25px rgba(0,0,0,0.15); transition: all 0.3s; cursor: pointer; display: flex; align-items: center; gap: 8px; }
         .btn-gps:hover { background: var(--nwc-navy); color: white; transform: translateY(-3px); }
         .upload-box { border: 2px dashed #cbd5e1; border-radius: 20px; padding: 35px 20px; text-align: center; background: #f8fafc; cursor: pointer; transition: 0.3s; display: flex; flex-direction: column; align-items: center; gap: 10px; }
-        .upload-box:hover { border-color: var(--nwc-blue); background: var(--nwc-light); }
-        .upload-box i { color: var(--nwc-blue); font-size: 2.5rem; }
-        .upload-box h6 { font-weight: 800; margin: 0; color: var(--nwc-navy); font-size: 1.1rem; }
-        .upload-box span { font-weight: 600; color: #64748b; font-size: 0.85rem; }
+        .upload-box:hover { border-color: var(--nwc-blue); background: var(--nwc-light); } .upload-box i { color: var(--nwc-blue); font-size: 2.5rem; } .upload-box h6 { font-weight: 800; margin: 0; color: var(--nwc-navy); font-size: 1.1rem; } .upload-box span { font-weight: 600; color: #64748b; font-size: 0.85rem; }
         .file-status { display: none; background: #ecfdf5; color: #059669; padding: 12px; border-radius: 12px; font-weight: 800; text-align: center; margin-top: 15px; border: 1px solid #a7f3d0; }
-
-        /* --- الأزرار والشارات --- */
         .btn-brand { background: linear-gradient(135deg, var(--nwc-navy), var(--nwc-blue)); color: white; border: none; border-radius: 16px; padding: 18px; font-weight: 900; font-size: 1.2rem; width: 100%; transition: all 0.4s; box-shadow: 0 10px 25px rgba(9, 46, 84, 0.2); display: flex; justify-content: center; align-items: center; gap: 10px; }
         .btn-brand:hover { transform: translateY(-4px); box-shadow: 0 15px 35px rgba(9, 46, 84, 0.3); color: white; }
-        
-        .table-custom th { border-bottom: 2px solid var(--nwc-light); color: #64748b; font-weight: 800; padding: 18px 15px; font-size: 0.95rem; }
-        .table-custom td { padding: 20px 15px; border-bottom: 1px solid #f1f5f9; vertical-align: middle; font-weight: 700; color: #1e293b; }
+        .table-custom th { border-bottom: 2px solid var(--nwc-light); color: #64748b; font-weight: 800; padding: 18px 15px; font-size: 0.95rem; } .table-custom td { padding: 20px 15px; border-bottom: 1px solid #f1f5f9; vertical-align: middle; font-weight: 700; color: #1e293b; }
         .status-badge { padding: 8px 15px; border-radius: 12px; font-weight: 800; display: inline-flex; align-items: center; gap: 6px; font-size: 0.85rem; }
-        
-        .badge-warning { background: #fffbeb; color: #d97706; border: 1px solid #fde68a; }
-        .badge-info { background: var(--nwc-light); color: var(--nwc-blue); border: 1px solid #bae6fd; }
-        .badge-primary { background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; }
-        .badge-success { background: #ecfdf5; color: #059669; border: 1px solid #a7f3d0; }
-        .badge-dark { background: #f8fafc; color: #334155; border: 1px solid #e2e8f0; }
-        .badge-danger { background: #fef2f2; color: #dc2626; border: 1px solid #fecaca; }
-        
-        .empty-state { text-align: center; padding: 60px 20px; }
-        .empty-state-icon { width: 100px; height: 100px; background: var(--nwc-light); color: var(--nwc-blue); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 3rem; margin: 0 auto 20px; }
+        .badge-warning { background: #fffbeb; color: #d97706; border: 1px solid #fde68a; } .badge-info { background: var(--nwc-light); color: var(--nwc-blue); border: 1px solid #bae6fd; } .badge-primary { background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; } .badge-success { background: #ecfdf5; color: #059669; border: 1px solid #a7f3d0; } .badge-dark { background: #f8fafc; color: #334155; border: 1px solid #e2e8f0; } .badge-danger { background: #fef2f2; color: #dc2626; border: 1px solid #fecaca; }
+        .empty-state { text-align: center; padding: 60px 20px; } .empty-state-icon { width: 100px; height: 100px; background: var(--nwc-light); color: var(--nwc-blue); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 3rem; margin: 0 auto 20px; }
     </style>
 </head>
 <body>
 
-<!-- الخلفية المائية المتحركة (مطابقة لصفحة الدخول) -->
 <div class="bg-animation" id="bg-particles"></div>
 <script>
     const bgContainer = document.getElementById('bg-particles');
@@ -328,7 +302,6 @@ function getStatusBadge($status) {
     }
 </script>
 
-<!-- شريط الملاحة الفاخر -->
 <nav class="navbar navbar-luxury fade-in-up">
     <div class="container d-flex justify-content-between align-items-center">
         <a href="#" class="d-flex align-items-center gap-3 text-decoration-none">
@@ -366,12 +339,10 @@ function getStatusBadge($status) {
             </div>
         </a>
         <div class="d-flex align-items-center gap-3">
-            <!-- زر عرض الملف الشخصي -->
             <div class="user-profile-badge" data-bs-toggle="modal" data-bs-target="#profileModal" title="عرض بياناتي">
                 <span class="ms-2"><?= htmlspecialchars($customer['full_name'] ?? $customerName); ?></span>
                 <div class="user-avatar"><i class="fa-solid fa-user-tie"></i></div>
             </div>
-            <!-- زر تسجيل الخروج (مربوط بالكود العلوي ?logout=1) -->
             <a href="?logout=1" class="btn btn-light text-danger rounded-circle shadow-sm border btn-logout" title="تسجيل الخروج">
                 <i class="fa-solid fa-power-off"></i>
             </a>
@@ -380,8 +351,6 @@ function getStatusBadge($status) {
 </nav>
 
 <div class="container pb-5 mt-4">
-    
-    <!-- منطقة الترحيب (نص فقط على الخلفية المتحركة الأصلية بدون صندوق خاص) -->
     <div class="row mb-5 fade-in-up delay-1">
         <div class="col-12">
             <div class="hero-plain">
@@ -405,18 +374,16 @@ function getStatusBadge($status) {
     </div>
 
     <div class="row g-4">
-        <!-- نموذج التقديم -->
         <div class="col-xl-5 col-lg-5 fade-in-up delay-2">
             <div class="premium-card">
                 <div class="card-header-title">
                     <i class="fa-solid fa-file-signature"></i> تقديم طلب جديد
                 </div>
-                
                 <form id="applicationForm">
                     <input type="hidden" name="is_ajax" value="1">
                     <input type="hidden" name="latitude" id="latitude" value="">
                     <input type="hidden" name="longitude" id="longitude" value="">
-                    
+
                     <div class="mb-4">
                         <label class="form-label">الخدمة المطلوبة <span class="required-mark">*</span></label>
                         <select name="srv_id" class="form-select" required>
@@ -437,10 +404,10 @@ function getStatusBadge($status) {
                                 if ($currentRegion != $city['reg_name']) {
                                     if ($currentRegion != '') echo '</optgroup>';
                                     $currentRegion = $city['reg_name'];
-                                    echo '<optgroup label="منطقة ' . htmlspecialchars($currentRegion) . '">';
+                                    echo '<optgroup label="' . htmlspecialchars($currentRegion) . '">';
                                 }
                             ?>
-                                <option value="<?= $city['cty_id']; ?>" data-city="<?= htmlspecialchars($city['cty_name']); ?>">&nbsp;&nbsp;&nbsp;مدينة <?= htmlspecialchars($city['cty_name']); ?></option>
+                                <option value="<?= $city['cty_id']; ?>" data-city="<?= htmlspecialchars($city['cty_name']); ?>">&nbsp;&nbsp;&nbsp; مدينة <?= htmlspecialchars($city['cty_name']); ?></option>
                             <?php endforeach; if ($currentRegion != '') echo '</optgroup>'; ?>
                         </select>
                     </div>
@@ -457,15 +424,13 @@ function getStatusBadge($status) {
                                 <i class="fa-solid fa-location-crosshairs" style="color: #f59e0b;"></i> موقعي الحالي
                             </button>
                         </div>
-                        <div id="gpsStatus" class="small text-muted mt-2 fw-bold text-center"><i class="fa-solid fa-circle-info" style="color:#3b82f6;"></i> نرجو تحديد الموقع بدقة لضمان سرعة الخدمة.</div>
+                        <div id="gpsStatus" class="small text-muted mt-2 fw-bold text-center"><i class="fa-solid fa-circle-info" style="color:#3b82f6;"></i> انقر للتحديد داخل نطاق الدائرة الزرقاء فقط.</div>
                     </div>
 
                     <div class="mb-4">
                         <label class="form-label">رقم صك الملكية (إلزامي) <span class="required-mark">*</span></label>
                         <div class="input-group" style="direction: ltr;">
-                            <input type="text" name="deed_no" id="deedInput" class="form-control" style="text-align: right; border-radius: 0 16px 16px 0;" 
-                                   placeholder="أدخل 12 رقماً" required minlength="12" maxlength="12" pattern="\d{12}" 
-                                   title="يجب أن يتكون رقم الصك من 12 رقماً تماماً" oninput="this.value = this.value.replace(/[^0-9]/g, '')">
+                            <input type="text" name="deed_no" id="deedInput" class="form-control" style="text-align: right; border-radius: 0 16px 16px 0;" placeholder="أدخل 12 رقماً" required minlength="12" maxlength="12" pattern="\d{12}" title="يجب أن يتكون رقم الصك من 12 رقماً تماماً" oninput="this.value = this.value.replace(/[^0-9]/g, '')">
                             <span class="input-group-text bg-light text-muted fw-bold" style="border-radius: 16px 0 0 16px; border: 2px solid #e2e8f0; border-right: none;">
                                 <i class="fa-solid fa-hashtag" style="color: #8b5cf6;"></i>
                             </span>
@@ -478,20 +443,19 @@ function getStatusBadge($status) {
                         <div class="upload-box" id="uploadBox" onclick="document.getElementById('fileInput').click()">
                             <i class="fa-solid fa-cloud-arrow-up"></i>
                             <h6>انقر هنا لإرفاق ملف الصك</h6>
-                            <span>(PDF, JPG, PNG) الحد الأقصى 5MB</span>
+                            <span>الحد الأقصى 5MB (PDF, JPG, PNG)</span>
                             <input type="file" id="fileInput" name="deed_file" class="d-none" accept=".pdf, .jpg, .jpeg, .png" required>
                         </div>
                         <div id="fileNameDisplay" class="file-status"></div>
                     </div>
 
                     <button type="submit" class="btn-brand" id="submitBtn">
-                        إرسال الطلب  <i class="fa-solid fa-paper-plane text-info"></i>
+                        إرسال الطلب <i class="fa-solid fa-paper-plane text-info"></i>
                     </button>
                 </form>
             </div>
         </div>
 
-        <!-- سجل الطلبات -->
         <div class="col-xl-7 col-lg-7 fade-in-up delay-3">
             <div class="premium-card card-plain">
                 <div class="card-header-title">
@@ -511,7 +475,7 @@ function getStatusBadge($status) {
                                 <tr>
                                     <th>الرقم المرجعي</th>
                                     <th>نوع الخدمة</th>
-                                    <th>رقم الصك (12 رقم)</th>
+                                    <th>رقم الصك</th>
                                     <th>حالة الطلب</th>
                                 </tr>
                             </thead>
@@ -533,25 +497,19 @@ function getStatusBadge($status) {
     </div>
 </div>
 
-<!-- ========================================== -->
-<!-- نافذة الملف الشخصي (Profile Modal) -->
-<!-- ========================================== -->
+<!-- Modal -->
 <div class="modal fade" id="profileModal" tabindex="-1" aria-labelledby="profileModalLabel" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered">
         <div class="modal-content" style="border-radius: 24px; border: none; box-shadow: 0 25px 50px rgba(0,0,0,0.15);">
-            
             <div class="modal-header border-0 pb-0 position-relative">
                 <button type="button" class="btn-close ms-auto mt-2 me-2" data-bs-dismiss="modal" aria-label="Close" style="z-index: 10;"></button>
             </div>
-            
             <div class="modal-body text-center px-4 pb-5 pt-0">
-                <div class="user-avatar mx-auto mb-3" style="width: 90px; height: 90px; font-size: 3rem; background: linear-gradient(135deg, var(--nwc-navy), var(--nwc-blue)); color: white; border-radius: 50%; display: flex; align-items: center; justify-content: center; box-shadow: 0 10px 25px rgba(9, 46, 84, 0.3);">
+                <div class="user-avatar mx-auto mb-3" style="width: 90px; height: 90px; font-size: 3rem; background: linear-gradient(135deg, var(--nwc-navy), var(--nwc-blue)); color: white; border-radius: 50%; display: flex; align-items: center; justify-content: center; box-shadow: 0 10px 25px rgba(9,46,84,0.3);">
                     <i class="fa-solid fa-user-tie"></i>
                 </div>
-                
                 <h3 class="fw-black text-dark mb-1"><?= htmlspecialchars($customer['full_name'] ?? $customerName); ?></h3>
                 <p class="text-muted fw-bold mb-4">عميل موثق <i class="fa-solid fa-circle-check text-success ms-1"></i></p>
-                
                 <div class="bg-light p-3" style="border-radius: 16px; border: 1px solid #e2e8f0; text-align: right;">
                     <div class="d-flex justify-content-between align-items-center mb-3 pb-3 border-bottom">
                         <span class="text-muted fw-bold"><i class="fa-regular fa-id-card me-2"></i> رقم الهوية</span>
@@ -573,122 +531,197 @@ function getStatusBadge($status) {
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
 <script>
-// ==========================================
-// برمجة الخريطة
-// ==========================================
-let map = L.map('propertyMap').setView([24.7136, 46.6753], 5);
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© Qatra Smart Systems' }).addTo(map);
-let marker;
-
-const cityCoords = {
-    'الرياض': [24.7136, 46.6753], 'جدة': [21.4858, 39.1925], 'مكة': [21.3891, 39.8579],
-    'المدينة': [24.5247, 39.5692], 'الدمام': [26.4207, 50.0888], 'بريدة': [26.3260, 43.9390],
-    'ابها': [18.2164, 42.5053], 'تبوك': [28.3835, 36.5662], 'حائل': [27.5114, 41.7208]
-};
-
-function unlockMap() {
-    let select = document.getElementById('citySelect');
-    let cityName = select.options[select.selectedIndex].getAttribute('data-city');
+    // ==========================================
+    // برمجة الخريطة الذكية (نظام الحصار الجغرافي Geofencing مخصص لنطاق العمل)
+    // ==========================================
+    let map = L.map('propertyMap').setView([26.3260, 43.9390], 7); 
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© Qatra Smart Systems' }).addTo(map);
     
-    document.getElementById('mapLock').style.opacity = '0';
-    setTimeout(() => { document.getElementById('mapLock').style.display = 'none'; }, 400);
-    document.getElementById('btnGps').classList.remove('d-none');
-    
-    let coords = [24.7136, 46.6753];
-    for (let key in cityCoords) { if (cityName && cityName.includes(key)) { coords = cityCoords[key]; break; } }
-    
-    setTimeout(() => { map.invalidateSize(); map.flyTo(coords, 13, { animate: true, duration: 1.5 }); }, 300);
-    document.getElementById('gpsStatus').innerHTML = `<span class="text-primary fw-bold"><i class="fa-solid fa-hand-pointer me-1"></i> انقر على الخريطة أو استخدم زر (موقعي الحالي).</span>`;
-}
+    let marker = null;
+    let cityCircle = null;
+    let currentValidCenter = null;
+    let currentValidRadius = null;
 
-function getCurrentLocation() {
-    if (navigator.geolocation) {
-        let btn = document.getElementById('btnGps');
-        btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> جاري التحديد...';
+    const cityData = {
+        // منطقة القصيم
+        'بريدة': { coords: [26.3260, 43.9390], radius: 25000 },
+        'الربيعية': { coords: [26.2750, 44.0700], radius: 10000 },
+        'الشماسية': { coords: [26.3000, 44.1300], radius: 10000 },
+        'عنيزة': { coords: [26.0855, 43.9760], radius: 15000 },
+        'الرس': { coords: [25.8694, 43.4973], radius: 15000 },
+        'البكيرية': { coords: [26.1442, 43.6593], radius: 10000 },
+        'المذنب': { coords: [25.8643, 44.2006], radius: 10000 },
+        'عيون الجواء': { coords: [26.5000, 43.6167], radius: 10000 },
+        'ضرية': { coords: [24.9667, 43.0167], radius: 10000 },
         
-        navigator.geolocation.getCurrentPosition(function(pos) {
-            let lat = pos.coords.latitude, lng = pos.coords.longitude;
-            map.flyTo([lat, lng], 17, { animate: true, duration: 1.5 });
-            
-            if (marker) marker.setLatLng([lat, lng]); else marker = L.marker([lat, lng]).addTo(map);
-            
-            document.getElementById('latitude').value = lat; document.getElementById('longitude').value = lng;
-            document.getElementById('gpsStatus').innerHTML = `<span class="text-success fw-bold"><i class="fa-solid fa-location-crosshairs me-1"></i> تم التقاط موقعك الحالي بنجاح.</span>`;
-            btn.innerHTML = '<i class="fa-solid fa-check text-success"></i> تم التحديد';
-            setTimeout(() => { btn.innerHTML = '<i class="fa-solid fa-location-crosshairs text-warning"></i> موقعي الحالي'; }, 3000);
-        }, function(error) {
-            btn.innerHTML = '<i class="fa-solid fa-location-crosshairs text-warning"></i> موقعي الحالي';
-            Swal.fire('تنبيه', 'يرجى السماح للمتصفح بالوصول إلى موقعك، أو قم بتحديده يدوياً.', 'warning');
-        });
-    } else {
-        Swal.fire('خطأ', 'متصفحك لا يدعم خاصية تحديد الموقع.', 'error');
-    }
-}
+        // منطقة حائل
+        'حائل': { coords: [27.5114, 41.7208], radius: 25000 },
+        'بقعاء': { coords: [28.0333, 42.6167], radius: 15000 },
+        'الشنان': { coords: [27.1333, 42.3833], radius: 10000 },
+        'الحائط': { coords: [25.9667, 40.4833], radius: 10000 },
 
-map.on('click', function(e) {
-    let lat = e.latlng.lat, lng = e.latlng.lng;
-    if (marker) marker.setLatLng(e.latlng); else marker = L.marker(e.latlng).addTo(map);
-    document.getElementById('latitude').value = lat; document.getElementById('longitude').value = lng;
-    document.getElementById('gpsStatus').innerHTML = `<span class="text-success fw-bold"><i class="fa-solid fa-check-circle me-1"></i> تم تحديد موقع العقار بنجاح.</span>`;
-});
+        // منطقة الجوف
+        'سكاكا': { coords: [29.9697, 40.2064], radius: 20000 },
+        'القريات': { coords: [31.3333, 37.3667], radius: 15000 },
+        'دومة الجندل': { coords: [29.8167, 39.8667], radius: 15000 },
+        'طبرجل': { coords: [30.4833, 38.2000], radius: 15000 },
 
-// ==========================================
-// التفاعلات والإرسال
-// ==========================================
-document.getElementById('fileInput').addEventListener('change', function(e) {
-    let display = document.getElementById('fileNameDisplay');
-    let box = document.getElementById('uploadBox');
-    
-    if(e.target.files.length > 0) {
-        display.style.display = 'block';
-        display.innerHTML = '<i class="fa-solid fa-file-circle-check me-1 fs-5"></i> تم إرفاق الملف: ' + e.target.files.name;
-        box.style.borderColor = '#10b981';
-        box.style.background = '#ecfdf5';
-        box.querySelector('i').style.color = '#10b981';
-        box.querySelector('i').className = 'fa-solid fa-circle-check';
-        box.querySelector('h6').innerText = 'تم الإرفاق بنجاح';
-    } else {
-        display.style.display = 'none';
-        box.style.borderColor = '#cbd5e1';
-        box.style.background = '#f8fafc';
-        box.querySelector('i').style.color = 'var(--nwc-blue)';
-        box.querySelector('i').className = 'fa-solid fa-cloud-arrow-up';
-        box.querySelector('h6').innerText = 'انقر هنا لإرفاق ملف الصك';
-    }
-});
+        // منطقة الحدود الشمالية
+        'عرعر': { coords: [30.9833, 41.0167], radius: 20000 },
+        'رفحاء': { coords: [29.6333, 43.5000], radius: 15000 },
+        'طريف': { coords: [31.6667, 38.6667], radius: 15000 }
+    };
 
-document.getElementById('applicationForm').addEventListener('submit', function(e) {
-    e.preventDefault();
-    
-    if(document.getElementById('latitude').value === "") {
-        Swal.fire({ icon: 'warning', title: 'خطوة مفقودة', text: 'يرجى تحديد موقع العقار على الخريطة.', confirmButtonColor: '#092e54' });
-        return;
+    function isWithinBounds(lat, lng) {
+        if (!currentValidCenter) return false;
+        let pt = L.latLng(lat, lng);
+        return currentValidCenter.distanceTo(pt) <= currentValidRadius;
     }
-    
-    let deedVal = document.getElementById('deedInput').value;
-    if(deedVal.length !== 12) {
-        Swal.fire({ icon: 'error', title: 'إدخال خاطئ', text: 'رقم الصك يجب أن يكون 12 رقماً بالضبط.', confirmButtonColor: '#092e54' });
-        return;
-    }
-    
-    let submitBtn = document.getElementById('submitBtn');
-    submitBtn.disabled = true;
-    
-    Swal.fire({ title: 'جاري معالجة الطلب...', text: 'يتم الآن مطابقة الصك مع وزارة العدل وتشفير البيانات', allowOutsideClick: false, didOpen: () => { Swal.showLoading(); } });
 
-    fetch('dashboard.php', { method: 'POST', body: new FormData(this) })
-    .then(r => r.json()).then(data => {
-        if(data.status === 'error') {
-            Swal.fire({ icon: 'error', title: 'عذراً', text: data.message, confirmButtonColor: '#092e54' }).then(() => { submitBtn.disabled = false; });
-        } else {
-            Swal.fire({ icon: 'success', title: 'عملية ناجحة', text: data.message, confirmButtonColor: '#10b981' }).then(() => { window.location.reload(); });
+    function unlockMap() {
+        let select = document.getElementById('citySelect');
+        let cityName = select.options[select.selectedIndex].getAttribute('data-city');
+        
+        document.getElementById('mapLock').style.opacity = '0';
+        setTimeout(() => { document.getElementById('mapLock').style.display = 'none'; }, 400);
+        document.getElementById('btnGps').classList.remove('d-none');
+        
+        document.getElementById('latitude').value = '';
+        document.getElementById('longitude').value = '';
+        if(marker) map.removeLayer(marker);
+        marker = null;
+        document.getElementById('gpsStatus').innerHTML = `<span class="text-primary fw-bold"><i class="fa-solid fa-hand-pointer me-1"></i> انقر للتحديد داخل نطاق الدائرة الزرقاء فقط.</span>`;
+
+        let coords = [26.3260, 43.9390];
+        let radius = 15000; 
+
+        for (let key in cityData) { 
+            if (cityName && cityName.includes(key)) { 
+                coords = cityData[key].coords; 
+                radius = cityData[key].radius;
+                break; 
+            } 
         }
-    }).catch(error => {
-        submitBtn.disabled = false;
-        Swal.fire('خطأ تقني', 'حدث خطأ في الاتصال بالخادم، يرجى التحقق من الشبكة.', 'error');
-    });
-});
-</script>
+        
+        currentValidCenter = L.latLng(coords, coords);
+        currentValidRadius = radius;
 
+        if (cityCircle) map.removeLayer(cityCircle);
+        cityCircle = L.circle(coords, {
+            color: '#4492d4',
+            fillColor: '#4492d4',
+            fillOpacity: 0.15,
+            radius: radius
+        }).addTo(map);
+
+        setTimeout(() => { map.invalidateSize(); map.flyTo(coords, 11, { animate: true, duration: 1.5 }); }, 300);
+    }
+
+    function getCurrentLocation() {
+        if (!currentValidCenter) {
+            Swal.fire('تنبيه', 'يرجى اختيار المدينة أولاً.', 'warning');
+            return;
+        }
+
+        if (navigator.geolocation) {
+            let btn = document.getElementById('btnGps');
+            btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> جاري التحديد...';
+            
+            navigator.geolocation.getCurrentPosition(function(pos) {
+                let lat = pos.coords.latitude, lng = pos.coords.longitude;
+                
+                if (!isWithinBounds(lat, lng)) {
+                    btn.innerHTML = '<i class="fa-solid fa-location-crosshairs text-warning"></i> موقعي الحالي';
+                    Swal.fire('خارج نطاق الخدمة', 'موقعك الحالي يقع خارج حدود المدينة التي قمت باختيارها! يرجى اختيار المدينة الصحيحة أو تحديد الموقع يدوياً داخل الدائرة المظللة.', 'error');
+                    return;
+                }
+
+                map.flyTo([lat, lng], 16, { animate: true, duration: 1.5 });
+                if (marker) marker.setLatLng([lat, lng]); else marker = L.marker([lat, lng]).addTo(map);
+                
+                document.getElementById('latitude').value = lat;
+                document.getElementById('longitude').value = lng;
+                
+                document.getElementById('gpsStatus').innerHTML = `<span class="text-success fw-bold"><i class="fa-solid fa-location-crosshairs me-1"></i> تم التقاط موقعك الحالي بنجاح.</span>`;
+                btn.innerHTML = '<i class="fa-solid fa-check text-success"></i> تم التحديد';
+                setTimeout(() => { btn.innerHTML = '<i class="fa-solid fa-location-crosshairs text-warning"></i> موقعي الحالي'; }, 3000);
+            }, function(error) {
+                btn.innerHTML = '<i class="fa-solid fa-location-crosshairs text-warning"></i> موقعي الحالي';
+                Swal.fire('تنبيه', 'يرجى السماح للمتصفح بالوصول إلى موقعك، أو قم بتحديده يدوياً.', 'warning');
+            });
+        } else {
+            Swal.fire('خطأ', 'متصفحك لا يدعم خاصية تحديد الموقع.', 'error');
+        }
+    }
+
+    map.on('click', function(e) {
+        let lat = e.latlng.lat, lng = e.latlng.lng;
+        
+        if (!isWithinBounds(lat, lng)) {
+            Swal.fire({
+                icon: 'error',
+                title: 'خارج النطاق',
+                text: 'عفواً، الموقع الذي حددته يقع خارج حدود المدينة المسموح بها. الرجاء التحديد داخل المساحة الزرقاء المظللة فقط.',
+                confirmButtonColor: '#092e54'
+            });
+            return;
+        }
+
+        if (marker) marker.setLatLng(e.latlng); else marker = L.marker(e.latlng).addTo(map);
+        document.getElementById('latitude').value = lat;
+        document.getElementById('longitude').value = lng;
+        document.getElementById('gpsStatus').innerHTML = `<span class="text-success fw-bold"><i class="fa-solid fa-check-circle me-1"></i> تم تحديد موقع العقار بدقة.</span>`;
+    });
+
+    // ==========================================
+    // التفاعلات وإرسال الطلب 
+    // ==========================================
+    document.getElementById('fileInput').addEventListener('change', function(e) {
+        let display = document.getElementById('fileNameDisplay');
+        let box = document.getElementById('uploadBox');
+        if(e.target.files.length > 0) {
+            display.style.display = 'block';
+            display.innerHTML = '<i class="fa-solid fa-file-circle-check me-1 fs-5"></i> تم إرفاق الملف: ' + e.target.files.name;
+            box.style.borderColor = '#10b981';
+            box.style.background = '#ecfdf5';
+            box.querySelector('i').style.color = '#10b981';
+            box.querySelector('i').className = 'fa-solid fa-circle-check';
+            box.querySelector('h6').innerText = 'تم الإرفاق بنجاح';
+        } else {
+            display.style.display = 'none';
+            box.style.borderColor = '#cbd5e1';
+            box.style.background = '#f8fafc';
+            box.querySelector('i').style.color = 'var(--nwc-blue)';
+            box.querySelector('i').className = 'fa-solid fa-cloud-arrow-up';
+            box.querySelector('h6').innerText = 'انقر هنا لإرفاق ملف الصك';
+        }
+    });
+
+    document.getElementById('applicationForm').addEventListener('submit', function(e) {
+        e.preventDefault();
+        
+        if(document.getElementById('latitude').value === "") {
+            Swal.fire({icon: 'warning', title: 'خطوة مفقودة', text: 'يرجى تحديد موقع العقار على الخريطة أولاً.', confirmButtonColor: '#092e54'});
+            return;
+        }
+
+        let submitBtn = document.getElementById('submitBtn');
+        submitBtn.disabled = true;
+
+        Swal.fire({title: 'جاري فحص الطلب...', text: 'يتم الآن مطابقة الصك والهوية مع سجلات وزارة العدل..', allowOutsideClick: false, didOpen: () => { Swal.showLoading(); }});
+
+        fetch('dashboard.php', { method: 'POST', body: new FormData(this) })
+        .then(r => r.json()).then(data => {
+            if(data.status === 'error') {
+                Swal.fire({icon: 'error', title: 'تنبيه نظام (DSS)', text: data.message, confirmButtonColor: '#092e54'}).then(() => { submitBtn.disabled = false; });
+            } else {
+                Swal.fire({icon: 'success', title: 'عملية ناجحة', text: data.message, confirmButtonColor: '#10b981'}).then(() => { window.location.reload(); });
+            }
+        }).catch(error => {
+            submitBtn.disabled = false;
+            Swal.fire('خطأ تقني', 'حدث خطأ في الاتصال بالخادم، يرجى التحقق من الشبكة.', 'error');
+        });
+    });
+</script>
 </body>
 </html>
