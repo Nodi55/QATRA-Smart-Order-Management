@@ -1,28 +1,22 @@
 ﻿<?php
-/**
- * =====================================================================
- * QATRA (قطرة) - ملف الاتصال بقاعدة البيانات السحابية (Clever Cloud)
- * =====================================================================
- */
+// إعدادات الاتصال بالسيرفر المحلي (XAMPP) لجهازك
+$host = '127.0.0.1';
+$db   = 'qatra_system'; // اسم قاعدة بيانات نظام قطرة التي أنشأناها واسترجعنا بياناتها
+$user = 'root';         // اسم المستخدم الافتراضي
+$pass = '';             // كلمة المرور (نتركها فارغة دائماً في السيرفر المحلي)
 
-$host     = 'bsfbmb13afxzn35nolyb-mysql.services.clever-cloud.com';
-$port     = '3306';
-$dbname   = 'bsfbmb13afxzn35nolyb';
-$username = 'ubracuf3anbungl9';
-$password = 'YEcp35Qxa68MIhQbUMDN';
+// خيارات الاتصال لضمان الأمان واسترجاع البيانات بشكل صحيح (ولدعم اللغة العربية)
+$options = [
+    PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
+    PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+    PDO::ATTR_EMULATE_PREPARES   => false,
+];
 
 try {
-    $pdo = new PDO(
-        "mysql:host=$host;port=$port;dbname=$dbname;charset=utf8mb4",
-        $username,
-        $password,
-        [
-            PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
-            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-            PDO::ATTR_PERSISTENT         => false
-        ]
-    );
-} catch (PDOException $e) {
-    die("❌ فشل الاتصال بقاعدة البيانات السحابية: " . $e->getMessage());
+    // إنشاء الاتصال بقاعدة البيانات
+    $pdo = new PDO("mysql:host=$host;dbname=$db;charset=utf8mb4", $user, $pass, $options);
+} catch (\PDOException $e) {
+    // رسالة تنبيه واضحة في حال تعطل السيرفر المحلي
+    die("<h3 style='color:red; text-align:center; font-family:tahoma;'>❌ فشل الاتصال بقاعدة البيانات: " . $e->getMessage() . "</h3>");
 }
 ?>
