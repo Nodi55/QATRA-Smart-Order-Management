@@ -52,7 +52,7 @@ try {
 
 
 // =====================================================================
-// معالجة إرسال الطلب (DSS، منع التكرار، وثبات موقع العقار)
+// معالجة إرسال الطلب (DSS، منع التكرار، ثبات الموقع، والتوزيع الذكي)
 // =====================================================================
 if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['is_ajax'])) {
     header('Content-Type: application/json');
@@ -77,7 +77,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['is_ajax'])) {
         // --- 1. التحقق من ثبات الموقع ومنع التكرار (Location & Duplication Check) ---
         $servicesToCreate = [];
         if ($originalSrvId == 3) {
-            $servicesToCreate = [2, 3]; // 1: مياه، 2: صرف صحي
+            $servicesToCreate = [1, 2]; // 1: مياه، 2: صرف صحي
         } else {
             $servicesToCreate = [$originalSrvId];
         }
@@ -125,18 +125,49 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['is_ajax'])) {
             exit;
         }
 
+        // ====================================================================
+        // خوارزمية التطابق الذكي للأسماء (Smart Name Normalization)
+        // لتخفيف العبء عن المدققين في حالات المسافات و (بن/بنت) والأخطاء الإملائية الشائعة
+        // ====================================================================
+        function normalizeName($name) {
+            // 1. توحيد الحروف الشائعة التي يكثر فيها الخطأ
+            $name = str_replace(['أ', 'إ', 'آ'], 'ا', $name);
+            $name = str_replace('ة', 'ه', $name);
+            $name = str_replace('ي', 'ى', $name);
+            
+            // 2. إزالة كلمات (بن) و (بنت) إذا كانت بين مسافات
+            $name = preg_replace('/\s+بن\s+/', ' ', $name);
+            $name = preg_replace('/\s+بنت\s+/', ' ', $name);
+            
+            // 3. دمج كلمة (عبد) لتلافي مشكلة (عبد الله) و (عبدالله)
+            $name = str_replace('عبد ', 'عبد', $name);
+            
+            // 4. إزالة جميع المسافات والفراغات الزائدة نهائياً
+            $name = preg_replace('/\s+/', '', $name);
+            
+            return $name;
+        }
+
+        // تطبيق الخوارزمية على الاسمين قبل المقارنة
+        $normalizedMojName = normalizeName($mojData['owner_name']);
+        $normalizedCustName = normalizeName($customer['full_name']);
+        // ====================================================================
+
         $appStatus = ''; 
         $statusMessage = '';
         $rejectionReason = null;
 
         if ($mojData['owner_national_id'] !== $nationalId) {
+            // الرفض لا يزال صارماً إذا اختلفت الهوية
             $appStatus = 'Rejected';
             $statusMessage = 'تم رفض الطلب آلياً: رقم الهوية الخاص بك لا يطابق رقم هوية مالك الصك في سجلات وزارة العدل.';
             $rejectionReason = 'رفض آلي عبر DSS: عدم تطابق الهوية الوطنية.';
-        } elseif (trim($mojData['owner_name']) !== trim($customer['full_name'])) {
+        } elseif ($normalizedMojName !== $normalizedCustName) {
+            // الإحالة للمدقق تتم فقط إذا كان الاختلاف جذرياً ولا يمكن ترقيعه بالخوارزمية
             $appStatus = 'Pending_Review';
-            $statusMessage = 'تم استلام طلبك بنجاح. نظراً لوجود اختلاف في تهجئة الاسم بين حسابك والصك، تمت إحالة الطلب للمراجعة اليدوية.';
+            $statusMessage = 'تم استلام طلبك بنجاح. نظراً لوجود اختلاف كبير في الاسم بين حسابك والصك، تمت إحالة الطلب للمراجعة اليدوية.';
         } else {
+            // قبول آلي وتوجيه لفني الفحص الميداني
             $appStatus = 'Pending_Inspection';
             $statusMessage = 'تطابق آلي 100%! تم التحقق من الصك والملكية بنجاح، وتحويل طلبك مباشرة للفحص الميداني.';
         }
@@ -160,6 +191,42 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['is_ajax'])) {
                 // تسجيل الحركة في جدول التتبع
                 $histQ = "INSERT INTO application_history (app_id, status, change_date, rejection_reason) VALUES (?, ?, NOW(), ?)";
                 $pdo->prepare($histQ)->execute([$newAppId, $appStatus, $rejectionReason]);
+
+                // ====================================================================
+                // نظام التعيين الذكي (Smart Dispatching) لفنيي الفحص [إذا تم القبول الآلي]
+                // ====================================================================
+                if ($appStatus == 'Pending_Inspection') {
+                    // البحث عن فني فحص نشط في نفس مدينة العقار، يمتلك أقل عدد من المهام الحالية
+                    try {
+                        // إضافة عمود is_active في حال لم يكن موجوداً لتفادي الأخطاء
+                        $pdo->query("SELECT is_active FROM company_employee LIMIT 1");
+                    } catch (Exception $e) {
+                        $pdo->exec("ALTER TABLE company_employee ADD COLUMN is_active BOOLEAN DEFAULT 1");
+                    }
+
+                    $findTechStmt = $pdo->prepare("
+                        SELECT ce.emp_id 
+                        FROM company_employee ce
+                        JOIN employee_roles er ON ce.emp_id = er.emp_id
+                        JOIN system_role sr ON er.role_id = sr.role_id
+                        WHERE ce.cty_id = ? 
+                          AND ce.is_active = 1 
+                          AND sr.role_name = 'Inspection Technician'
+                        ORDER BY ce.active_tasks_count ASC 
+                        LIMIT 1
+                    ");
+                    $findTechStmt->execute([$cityId]);
+                    $assignedTechId = $findTechStmt->fetchColumn();
+
+                    if ($assignedTechId) {
+                        // إسناد المهمة للفني بإنشاء سجل في جدول الفحص الميداني
+                        $pdo->prepare("INSERT INTO field_inspection (app_id, emp_id) VALUES (?, ?)")->execute([$newAppId, $assignedTechId]);
+                        
+                        // تحديث عبء العمل: زيادة عدد المهام النشطة للفني بمقدار 1
+                        $pdo->prepare("UPDATE company_employee SET active_tasks_count = active_tasks_count + 1 WHERE emp_id = ?")->execute([$assignedTechId]);
+                    }
+                }
+                // ====================================================================
             }
 
             // إعداد رسالة النجاح المناسبة للعميل
