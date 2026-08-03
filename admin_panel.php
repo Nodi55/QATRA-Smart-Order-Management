@@ -35,7 +35,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
         $empPassword = password_hash($_POST['password'], PASSWORD_DEFAULT);
         $ctyId = $_POST['cty_id']; // المدينة
         $selectedRoles = $_POST['roles'] ?? [];
-        
+       
         if (empty($selectedRoles)) {
             $msg = "خطأ: يجب تحديد صلاحية واحدة على الأقل."; $msgType = "danger";
         } else {
