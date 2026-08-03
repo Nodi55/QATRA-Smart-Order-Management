@@ -3,213 +3,105 @@ error_reporting(E_ALL);
 ini_set('display_errors', 1);
 session_start();
 
-// التحقق من أن الموظف مسجل دخوله فعلاً
+// التحقق من تسجيل الدخول
 if (!isset($_SESSION['emp_id'])) {
     header("Location: employee_login.php");
     exit;
 }
 
-// حماية إضافية: إذا لم يكن لديه صلاحيات، ننهي الجلسة
 if (empty($_SESSION['emp_roles'])) {
-    die("<div style='text-align:center; margin-top:100px; font-family:tahoma;'><h2>عفواً، حسابك لا يمتلك أي صلاحيات حالياً.</h2><a href='logout.php'>تسجيل الخروج</a></div>");
+    die("<div style='text-align:center; padding:50px; font-family:tahoma;'><h2>حسابك لا يمتلك صلاحيات.</h2><a href='logout.php'>تسجيل الخروج</a></div>");
 }
 
 $empName = $_SESSION['emp_name'];
-$roles = $_SESSION['emp_roles']; // المصفوفة التي تحتوي على الصلاحيات
+// فلترة الصلاحيات المكررة لضمان ظهور 4 مساحات عمل فقط كحد أقصى
+$roles = array_unique($_SESSION['emp_roles']); 
 
-// إذا اختار الموظف صلاحية معينة، نحفظها ونوجهه للوحة المناسبة
+// التوجيه عند الضغط على إحدى الصلاحيات
 if (isset($_GET['active_role']) && in_array($_GET['active_role'], $roles)) {
     $_SESSION['current_active_role'] = $_GET['active_role'];
     
     if ($_GET['active_role'] == 'Admin') header("Location: admin_panel.php");
     elseif ($_GET['active_role'] == 'Auditor') header("Location: auditor_panel.php");
-    elseif ($_GET['active_role'] == 'Technician') header("Location: technician_panel.php");
-    exit;
-}
-
-// 🌟 الحل الجذري والآمن باستخدام دالة reset() لتجنب أي أخطاء
-if (count($roles) === 1 && !isset($_SESSION['current_active_role'])) {
-    $singleRole = reset($roles); // دالة reset تستخرج النص الأول من المصفوفة بأمان
-    header("Location: ?active_role=" . urlencode($singleRole));
+    elseif ($_GET['active_role'] == 'Inspection Technician') header("Location: inspection_panel.php");
+    elseif ($_GET['active_role'] == 'Installation Technician') header("Location: installation_panel.php");
     exit;
 }
 ?>
-
 <!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>اختيار الصلاحية | نظام قطرة</title>
+    <title>بوابة النظام | قطرة</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800;900&display=swap" rel="stylesheet">
-    
+    <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800&display=swap" rel="stylesheet">
     <style>
-        :root { 
-            --qatra-navy: #092e54; 
-            --qatra-blue: #0b457f; 
-            --qatra-light: #4492d4; 
-            --bg-color: #f8fafc;
-        }
-        body { 
-            font-family: 'Cairo', sans-serif; 
-            background-color: var(--bg-color); 
-            min-height: 100vh;
-            margin: 0;
-            display: flex;
-            flex-direction: column;
-        }
-
-        .hero-section {
-            background: linear-gradient(180deg, #093c6f 0%, #10599c 100%);
-            padding: 20px 5%;
-            position: relative;
-            padding-bottom: 80px;
-        }
-        .user-welcome {
-            color: white;
-            display: flex;
-            align-items: center;
-            gap: 15px;
-        }
-        .user-avatar {
-            width: 50px; height: 50px;
-            background: rgba(255,255,255,0.2);
-            border-radius: 50%;
-            display: flex; align-items: center; justify-content: center;
-            font-size: 1.5rem; backdrop-filter: blur(5px);
-        }
+        :root { --qatra-navy: #092e54; --qatra-blue: #0b457f; --bg-color: #f4f7f6; }
+        body { font-family: 'Cairo', sans-serif; background-color: var(--bg-color); margin: 0; min-height: 100vh; display: flex; flex-direction: column; }
         
-        .wave-bottom { position: absolute; bottom: 0; left: 0; width: 100%; overflow: hidden; line-height: 0; transform: translateY(1px); }
-        .wave-bottom svg { display: block; width: calc(100% + 1.3px); height: 50px; }
-        .wave-bottom .shape-fill { fill: var(--bg-color); }
+        .header { background: white; border-bottom: 2px solid var(--qatra-blue); padding: 15px 5%; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 4px 10px rgba(0,0,0,0.05); }
+        .header .brand { color: var(--qatra-navy); font-weight: 800; font-size: 1.5rem; display: flex; align-items: center; gap: 10px; }
+        .btn-logout { border: 1px solid #dc3545; color: #dc3545; padding: 8px 20px; border-radius: 8px; font-weight: 700; text-decoration: none; transition: 0.3s; }
+        .btn-logout:hover { background: #dc3545; color: white; }
 
-        .content-container {
-            margin-top: -40px;
-            position: relative;
-            z-index: 10;
-            padding: 0 5%;
-            flex-grow: 1;
-        }
+        .welcome-section { text-align: center; margin: 50px 0 40px; }
+        .welcome-section h1 { color: var(--qatra-navy); font-weight: 800; }
         
-        .section-title {
-            color: var(--qatra-navy);
-            font-weight: 900;
-            margin-bottom: 30px;
-            text-align: center;
-        }
-
-        .roles-grid {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 25px;
-            justify-content: center;
-            max-width: 900px;
-            margin: 0 auto;
-        }
-
-        .role-card {
-            background: white;
-            border: 1px solid #e2e8f0;
-            border-radius: 20px;
-            padding: 40px 30px;
-            width: 280px;
-            text-align: center;
-            text-decoration: none;
-            transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
-            box-shadow: 0 10px 30px rgba(11, 69, 127, 0.05);
-            position: relative;
-            overflow: hidden;
-        }
-        .role-card::before {
-            content: ''; position: absolute; top: 0; left: 0; width: 100%; height: 5px;
-            background: var(--qatra-light);
-            transform: scaleX(0); transition: 0.4s; transform-origin: right;
-        }
-        
-        .role-card:hover {
-            transform: translateY(-10px);
-            box-shadow: 0 20px 40px rgba(11, 69, 127, 0.15);
-            border-color: var(--qatra-light);
-        }
-        .role-card:hover::before { transform: scaleX(1); }
-
-        .role-icon {
-            width: 80px; height: 80px;
-            background: #f1f5f9;
-            color: var(--qatra-blue);
-            border-radius: 20px;
-            display: flex; align-items: center; justify-content: center;
-            font-size: 2.5rem;
-            margin: 0 auto 20px;
-            transition: 0.4s;
-        }
-        .role-card:hover .role-icon { background: var(--qatra-blue); color: white; transform: rotate(-5deg); }
-
-        .role-title { font-weight: 900; color: var(--qatra-navy); font-size: 1.4rem; margin-bottom: 10px; }
-        .role-desc { color: #64748b; font-size: 0.95rem; font-weight: 600; line-height: 1.6; }
-
-        .btn-logout {
-            position: absolute; left: 5%; top: 25px;
-            background: rgba(255,255,255,0.1); color: white;
-            border: 1px solid rgba(255,255,255,0.3); padding: 8px 20px;
-            border-radius: 50px; text-decoration: none; font-weight: 700;
-            transition: 0.3s; backdrop-filter: blur(5px);
-        }
-        .btn-logout:hover { background: rgba(255,255,255,0.2); color: white; }
+        .roles-grid { display: flex; flex-wrap: wrap; justify-content: center; gap: 20px; max-width: 1000px; margin: 0 auto; padding: 0 15px; }
+        .role-card { background: white; border: 1px solid #e0e0e0; border-radius: 12px; padding: 40px 25px; width: 260px; text-align: center; text-decoration: none; transition: 0.3s; box-shadow: 0 4px 6px rgba(0,0,0,0.02); }
+        .role-card:hover { transform: translateY(-5px); border-color: var(--qatra-blue); box-shadow: 0 10px 20px rgba(11,69,127,0.1); }
+        .role-icon { width: 70px; height: 70px; background: #f0f4f8; color: var(--qatra-blue); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 2rem; margin: 0 auto 20px; transition: 0.3s; }
+        .role-card:hover .role-icon { background: var(--qatra-blue); color: white; }
+        .role-title { font-weight: 800; color: var(--qatra-navy); font-size: 1.2rem; margin-bottom: 10px; }
+        .role-desc { color: #6c757d; font-size: 0.85rem; font-weight: 600; line-height: 1.5; }
     </style>
 </head>
 <body>
 
-<div class="hero-section">
-    <a href="logout.php" class="btn-logout"><i class="fa-solid fa-power-off ms-1"></i> تسجيل الخروج</a>
-    
-    <div class="user-welcome">
-        <div class="user-avatar"><i class="fa-regular fa-user"></i></div>
-        <div>
-            <h4 class="m-0 fw-black">مرحباً بك، <?= htmlspecialchars($empName); ?></h4>
-            <span class="text-info fw-bold" style="font-size: 0.9rem;">لديك (<?= count($roles); ?>) صلاحيات مرتبطة بحسابك</span>
-        </div>
-    </div>
-
-    <div class="wave-bottom">
-        <svg data-name="Layer 1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 120" preserveAspectRatio="none">
-            <path d="M321.39,56.44c58-10.79,114.16-30.13,172-41.86,82.39-16.72,168.19-17.73,250.45-.39C823.78,31,906.67,72,985.66,92.83c70.05,18.48,146.53,26.09,214.34,3V120H0V95.8C59.71,118.08,130.83,119.33,197.8,109.1,239.5,102.73,280.9,82.52,321.39,56.44Z" class="shape-fill"></path>
-        </svg>
-    </div>
+<div class="header">
+    <div class="brand"><i class="fa-solid fa-droplet text-primary"></i> نظام قطرة المؤسسي</div>
+    <a href="logout.php" class="btn-logout">خروج <i class="fa-solid fa-arrow-right-from-bracket ms-1"></i></a>
 </div>
 
-<div class="content-container">
-    <h2 class="section-title">يرجى تحديد مساحة العمل (Workspace)</h2>
-    
-    <div class="roles-grid">
-        
-        <?php if(in_array('Admin', $roles)): ?>
-        <a href="?active_role=Admin" class="role-card">
-            <div class="role-icon"><i class="fa-solid fa-user-tie"></i></div>
-            <div class="role-title">مدير النظام</div>
-            <div class="role-desc">إدارة النظام بالكامل، متابعة الإحصائيات، وإدارة حسابات الموظفين والعملاء.</div>
-        </a>
-        <?php endif; ?>
+<div class="welcome-section">
+    <h1>أهلاً بك، المهندس/ة <?= htmlspecialchars($empName); ?></h1>
+    <p class="text-muted fw-bold">الرجاء اختيار مساحة العمل المراد الدخول إليها</p>
+</div>
 
-        <?php if(in_array('Auditor', $roles)): ?>
-        <a href="?active_role=Auditor" class="role-card">
-            <div class="role-icon"><i class="fa-solid fa-file-signature"></i></div>
-            <div class="role-title">مدقق الطلبات</div>
-            <div class="role-desc">مراجعة الطلبات المعلقة يدوياً، تدقيق الصكوك العقارية، وقبول أو رفض الطلبات.</div>
-        </a>
-        <?php endif; ?>
+<div class="roles-grid">
+    <?php if(in_array('Admin', $roles)): ?>
+    <a href="?active_role=Admin" class="role-card">
+        <div class="role-icon"><i class="fa-solid fa-user-shield"></i></div>
+        <div class="role-title">مدير النظام</div>
+        <div class="role-desc">إدارة الموظفين، المهام الشاملة، وإحصائيات كادر العمل.</div>
+    </a>
+    <?php endif; ?>
 
-        <?php if(in_array('Technician', $roles)): ?>
-        <a href="?active_role=Technician" class="role-card">
-            <div class="role-icon"><i class="fa-solid fa-helmet-safety"></i></div>
-            <div class="role-title">الفني الميداني</div>
-            <div class="role-desc">استلام مهام الفحص الميداني، رفع صور المواقع، وتوثيق تركيب العدادات.</div>
-        </a>
-        <?php endif; ?>
+    <?php if(in_array('Auditor', $roles)): ?>
+    <a href="?active_role=Auditor" class="role-card">
+        <div class="role-icon"><i class="fa-solid fa-file-signature"></i></div>
+        <div class="role-title">مدقق الطلبات</div>
+        <div class="role-desc">مراجعة صكوك الملكية والطلبات المعلقة للعملاء.</div>
+    </a>
+    <?php endif; ?>
 
-    </div>
+    <?php if(in_array('Inspection Technician', $roles)): ?>
+    <a href="?active_role=Inspection Technician" class="role-card">
+        <div class="role-icon"><i class="fa-solid fa-clipboard-check"></i></div>
+        <div class="role-title">فني فحص</div>
+        <div class="role-desc">إجراء الفحص الميداني للموقع ورفع الصور للطلبات.</div>
+    </a>
+    <?php endif; ?>
+
+    <?php if(in_array('Installation Technician', $roles)): ?>
+    <a href="?active_role=Installation Technician" class="role-card">
+        <div class="role-icon"><i class="fa-solid fa-wrench"></i></div>
+        <div class="role-title">فني تركيب</div>
+        <div class="role-desc">استلام مهام التركيب للعدادات وتسجيل القراءات.</div>
+    </a>
+    <?php endif; ?>
 </div>
 
 </body>

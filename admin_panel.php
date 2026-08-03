@@ -11,7 +11,10 @@ if (!isset($_SESSION['emp_id']) || !in_array('Admin', $_SESSION['emp_roles'])) {
 require_once 'db_connect.php';
 $msg = ""; $msgType = "";
 
-// 🌟 1. تنظيف قاعدة البيانات وضمان عدم التكرار للـ 4 أدوار
+// تهيئة ذكية: تأكيد وجود الصلاحيات الأربعة فقط وإضافة عمود الحالة إن لم يوجد
+try { $pdo->query("SELECT is_active FROM company_employee LIMIT 1"); } 
+catch (Exception $e) { $pdo->exec("ALTER TABLE company_employee ADD COLUMN is_active BOOLEAN DEFAULT 1"); }
+
 $pdo->exec("DELETE FROM system_role WHERE role_name = 'Technician'");
 $requiredRoles = ['Admin', 'Auditor', 'Inspection Technician', 'Installation Technician'];
 foreach ($requiredRoles as $roleName) {
@@ -22,67 +25,88 @@ foreach ($requiredRoles as $roleName) {
     }
 }
 
-// 🌟 2. العمليات (CRUD)
+// 🌟 معالجة العمليات (إضافة، تعديل، إيقاف، حذف)
 if ($_SERVER["REQUEST_METHOD"] == "POST") {
     
-    // إضافة
+    // 1. إضافة موظف جديد (شامل جميع الحقول)
     if (isset($_POST['add_employee'])) {
-        $empName = trim($_POST['emp_name']); $empEmail = trim($_POST['emp_email']);
+        $empName = trim($_POST['emp_name']);
+        $empEmail = trim($_POST['emp_email']);
         $empPassword = password_hash($_POST['password'], PASSWORD_DEFAULT);
+        $ctyId = $_POST['cty_id']; // المدينة
         $selectedRoles = $_POST['roles'] ?? [];
+        
         if (empty($selectedRoles)) {
-            $msg = "يجب تحديد صلاحية واحدة على الأقل."; $msgType = "danger";
+            $msg = "خطأ: يجب تحديد صلاحية واحدة على الأقل."; $msgType = "danger";
         } else {
             try {
-                $stmt = $pdo->prepare("INSERT INTO company_employee (emp_name, emp_email, password_hash, cty_id, is_active) VALUES (?, ?, ?, 1, 1)");
-                $stmt->execute([$empName, $empEmail, $empPassword]);
+                // الإدراج في Company_Employee الشامل
+                $stmt = $pdo->prepare("INSERT INTO company_employee (emp_name, emp_email, password_hash, cty_id, is_active, active_tasks_count) VALUES (?, ?, ?, ?, 1, 0)");
+                $stmt->execute([$empName, $empEmail, $empPassword, $ctyId]);
                 $newEmpId = $pdo->lastInsertId();
+                
+                // إدراج الصلاحيات المتعددة في Employee_Roles
                 foreach ($selectedRoles as $rId) {
                     $pdo->prepare("INSERT INTO employee_roles (emp_id, role_id) VALUES (?, ?)")->execute([$newEmpId, $rId]);
                 }
-                $msg = "تم إنشاء حساب الموظف بنجاح."; $msgType = "success";
-            } catch (PDOException $e) { $msg = "البريد الإلكتروني مسجل مسبقاً."; $msgType = "danger"; }
+                $msg = "تم تسجيل الموظف بنجاح."; $msgType = "success";
+            } catch (PDOException $e) { $msg = "البريد الإلكتروني مستخدم مسبقاً."; $msgType = "danger"; }
         }
     }
-    // تعديل
+
+    // 2. تحديث بيانات الموظف
     if (isset($_POST['edit_employee'])) {
-        $eId = $_POST['edit_emp_id']; $eName = trim($_POST['edit_emp_name']); $eEmail = trim($_POST['edit_emp_email']);
+        $eId = $_POST['edit_emp_id']; $eName = trim($_POST['edit_emp_name']); 
+        $eEmail = trim($_POST['edit_emp_email']); $eCty = $_POST['edit_cty_id'];
         $selectedRoles = $_POST['edit_roles'] ?? [];
+        
         try {
-            $pdo->prepare("UPDATE company_employee SET emp_name = ?, emp_email = ? WHERE emp_id = ?")->execute([$eName, $eEmail, $eId]);
-            $pdo->prepare("DELETE FROM employee_roles WHERE emp_id = ?")->execute([$eId]);
+            $pdo->prepare("UPDATE company_employee SET emp_name=?, emp_email=?, cty_id=? WHERE emp_id=?")->execute([$eName, $eEmail, $eCty, $eId]);
+            $pdo->prepare("DELETE FROM employee_roles WHERE emp_id=?")->execute([$eId]);
             foreach ($selectedRoles as $rId) { $pdo->prepare("INSERT INTO employee_roles (emp_id, role_id) VALUES (?, ?)")->execute([$eId, $rId]); }
-            $msg = "تم تحديث البيانات."; $msgType = "success";
-        } catch (Exception $e) { $msg = "خطأ بالتحديث."; $msgType = "danger"; }
+            $msg = "تم التحديث بنجاح."; $msgType = "success";
+        } catch (Exception $e) { $msg = "خطأ في التحديث."; $msgType = "danger"; }
     }
-    // إيقاف
+
+    // 3. إيقاف/تفعيل
     if (isset($_POST['toggle_status'])) {
         $eId = $_POST['target_emp_id'];
         $pdo->prepare("UPDATE company_employee SET is_active = NOT is_active WHERE emp_id = ?")->execute([$eId]);
-        $msg = "تم تحديث حالة الحساب."; $msgType = "success";
+        $msg = "تم تحديث حالة الموظف."; $msgType = "success";
     }
-    // حذف
+
+    // 4. حذف
     if (isset($_POST['delete_employee'])) {
         $eId = $_POST['target_emp_id'];
         try {
             $pdo->prepare("DELETE FROM company_employee WHERE emp_id = ?")->execute([$eId]);
-            $msg = "تم الحذف نهائياً."; $msgType = "success";
+            $msg = "تم حذف سجل الموظف."; $msgType = "success";
         } catch (PDOException $e) {
             $pdo->prepare("UPDATE company_employee SET is_active = 0 WHERE emp_id = ?")->execute([$eId]);
-            $msg = "تم إيقاف الموظف لعدم إمكانية حذفه (لوجود سجلات)."; $msgType = "warning";
+            $msg = "تم إيقاف الموظف، لا يمكن حذفه لوجود مهام مرتبطة."; $msgType = "warning";
         }
     }
 }
 
-// --- جلب البيانات ---
+// --- جلب البيانات الشاملة ---
+// التأكد من وجود مدينة افتراضية للعمل عليها
+try { $pdo->query("SELECT * FROM city LIMIT 1"); } 
+catch(Exception $e) { $pdo->exec("CREATE TABLE IF NOT EXISTS city (cty_id INT PRIMARY KEY AUTO_INCREMENT, cty_name VARCHAR(100)); INSERT IGNORE INTO city (cty_id, cty_name) VALUES (1, 'الرياض'), (2, 'جدة'), (3, 'الدمام');"); }
+
+$cities = $pdo->query("SELECT * FROM city")->fetchAll(PDO::FETCH_ASSOC);
 $empCount = $pdo->query("SELECT COUNT(*) FROM company_employee")->fetchColumn();
+
+// جلب تفاصيل الموظفين الشاملة (الاسم، الإيميل، المدينة، المهام، الحالة، الصلاحيات)
 $employeesData = $pdo->query("
-    SELECT ce.*, GROUP_CONCAT(DISTINCT sr.role_name SEPARATOR ',') as roles, GROUP_CONCAT(DISTINCT sr.role_id SEPARATOR ',') as role_ids
+    SELECT ce.emp_id, ce.emp_name, ce.emp_email, ce.active_tasks_count, ce.is_active, ce.cty_id, c.cty_name,
+           GROUP_CONCAT(DISTINCT sr.role_name SEPARATOR ',') as roles, GROUP_CONCAT(DISTINCT sr.role_id SEPARATOR ',') as role_ids
     FROM company_employee ce
+    LEFT JOIN city c ON ce.cty_id = c.cty_id
     LEFT JOIN employee_roles er ON ce.emp_id = er.emp_id
     LEFT JOIN system_role sr ON er.role_id = sr.role_id
     GROUP BY ce.emp_id ORDER BY ce.emp_id DESC
 ")->fetchAll(PDO::FETCH_ASSOC);
+
 $rolesList = $pdo->query("SELECT MIN(role_id) as role_id, role_name FROM system_role GROUP BY role_name")->fetchAll(PDO::FETCH_ASSOC);
 ?>
 
@@ -91,178 +115,140 @@ $rolesList = $pdo->query("SELECT MIN(role_id) as role_id, role_name FROM system_
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>لوحة الإدارة الملونة | قطرة</title>
+    <title>إدارة الموظفين | قطرة</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;800;900&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800&display=swap" rel="stylesheet">
     
     <style>
-        :root { --navy: #0f172a; --blue-dark: #1e3a8a; --blue-light: #3b82f6; --bg: #f4f7fb; }
-        body { font-family: 'Cairo', sans-serif; background-color: var(--bg); margin: 0; display: flex; min-height: 100vh; overflow-x: hidden; }
+        :root { --primary: #092e54; --secondary: #0b457f; --accent: #4492d4; --bg: #f4f6f9; }
+        body { font-family: 'Cairo', sans-serif; background-color: var(--bg); display: flex; min-height: 100vh; margin: 0; }
         
-        /* القائمة الجانبية الفاخرة */
-        .sidebar { width: 280px; background: linear-gradient(180deg, #0f172a 0%, #1e293b 100%); color: white; padding: 30px 20px; display: flex; flex-direction: column; box-shadow: -10px 0 30px rgba(0,0,0,0.15); z-index: 100; }
-        .sidebar .brand { text-align: center; margin-bottom: 40px; font-weight: 900; font-size: 2rem; color: white; display: flex; flex-direction: column; align-items: center; }
-        .sidebar .brand i { font-size: 3rem; background: linear-gradient(45deg, #38bdf8, #fff); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 5px; }
+        /* شريط جانبي مؤسسي احترافي */
+        .sidebar { width: 260px; background: var(--primary); color: white; display: flex; flex-direction: column; padding: 20px 0; box-shadow: -2px 0 10px rgba(0,0,0,0.1); z-index: 10; }
+        .sidebar-brand { text-align: center; font-size: 1.8rem; font-weight: 800; padding-bottom: 20px; border-bottom: 1px solid rgba(255,255,255,0.1); margin-bottom: 20px; }
+        .nav-link { color: #cbd3da; padding: 12px 25px; font-weight: 700; text-decoration: none; display: flex; align-items: center; gap: 15px; transition: 0.3s; }
+        .nav-link:hover, .nav-link.active { background: var(--secondary); color: white; border-right: 4px solid var(--accent); }
         
-        .nav-link { color: #94a3b8; font-weight: 800; padding: 16px 20px; border-radius: 16px; margin-bottom: 12px; transition: all 0.3s; display: flex; align-items: center; gap: 15px; text-decoration: none; }
-        .nav-link:hover { background: rgba(255,255,255,0.05); color: white; transform: translateX(-5px); }
-        .nav-link.active { background: linear-gradient(90deg, #3b82f6, #2563eb); color: white; box-shadow: 0 10px 20px rgba(59, 130, 246, 0.4); }
+        .main-content { flex: 1; padding: 30px; overflow-y: auto; }
         
-        .main-content { flex: 1; padding: 40px; overflow-y: auto; }
+        /* بطاقات ونماذج */
+        .corporate-card { background: white; border-radius: 8px; border: 1px solid #e0e4e8; padding: 25px; box-shadow: 0 2px 4px rgba(0,0,0,0.02); margin-bottom: 25px; }
+        .card-header-title { font-weight: 800; color: var(--primary); margin-bottom: 25px; border-bottom: 2px solid #f0f0f0; padding-bottom: 15px; display: flex; justify-content: space-between; align-items: center; }
         
-        /* رأس الصفحة الملون */
-        .page-header { background: white; padding: 25px 35px; border-radius: 20px; box-shadow: 0 10px 30px rgba(0,0,0,0.03); margin-bottom: 30px; display: flex; justify-content: space-between; align-items: center; border-bottom: 4px solid #3b82f6; }
-        .page-header h2 { font-weight: 900; color: var(--navy); margin: 0; }
+        .form-label { font-weight: 700; color: #495057; font-size: 0.9rem; }
+        .form-control, .form-select { border-radius: 6px; border: 1px solid #ced4da; padding: 10px 15px; font-weight: 600; }
+        .form-control:focus, .form-select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(68, 146, 212, 0.15); }
         
-        /* البطاقات الإحصائية الملونة */
-        .stat-card { border-radius: 24px; padding: 30px; color: white; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 15px 35px rgba(0,0,0,0.1); position: relative; overflow: hidden; transition: 0.3s; }
-        .stat-card:hover { transform: translateY(-5px); }
-        .stat-card::after { content: ''; position: absolute; right: -20px; top: -20px; width: 100px; height: 100px; background: rgba(255,255,255,0.1); border-radius: 50%; }
-        .bg-gradient-blue { background: linear-gradient(135deg, #2563eb, #3b82f6); }
-        .bg-gradient-purple { background: linear-gradient(135deg, #7c3aed, #8b5cf6); }
+        .checkbox-group { display: flex; flex-wrap: wrap; gap: 10px; }
+        .checkbox-group label { background: #f8f9fa; border: 1px solid #dee2e6; padding: 8px 15px; border-radius: 6px; cursor: pointer; font-weight: 700; font-size: 0.85rem; transition: 0.2s; }
+        .checkbox-group input[type="checkbox"] { display: none; }
+        .checkbox-group input[type="checkbox"]:checked + label { background: #e3f2fd; border-color: var(--accent); color: var(--secondary); }
         
-        /* نماذج الإدخال والجداول */
-        .card-custom { background: white; border-radius: 24px; padding: 35px; box-shadow: 0 15px 35px rgba(0,0,0,0.04); margin-bottom: 30px; border: none; }
-        .form-control { border-radius: 14px; padding: 14px 20px; font-weight: 700; background: #f8fafc; border: 2px solid #e2e8f0; color: #1e293b; }
-        .form-control:focus { border-color: #3b82f6; background: white; box-shadow: 0 0 0 5px rgba(59,130,246,0.15); }
-        
-        /* أزرار الصلاحيات التفاعلية */
-        .role-check-group { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-        .role-check-group input[type="checkbox"] { display: none; }
-        .role-check-label { padding: 15px; border-radius: 16px; background: #f8fafc; color: #64748b; font-weight: 800; border: 2px solid #e2e8f0; cursor: pointer; transition: 0.3s; display: flex; align-items: center; gap: 10px; font-size: 0.95rem; }
-        .role-check-group input[type="checkbox"]:checked + .role-check-label { background: #eff6ff; border-color: #3b82f6; color: #2563eb; box-shadow: 0 8px 20px rgba(59,130,246,0.15); transform: translateY(-2px); }
-        
-        .btn-gradient { background: linear-gradient(135deg, #10b981, #059669); color: white; font-weight: 900; font-size: 1.1rem; border-radius: 14px; padding: 16px; border: none; width: 100%; transition: 0.3s; box-shadow: 0 10px 25px rgba(16, 185, 129, 0.3); }
-        .btn-gradient:hover { transform: translateY(-3px); box-shadow: 0 15px 35px rgba(16, 185, 129, 0.5); color: white; }
+        .btn-brand { background: var(--secondary); color: white; border: none; padding: 12px; border-radius: 6px; font-weight: 800; width: 100%; transition: 0.3s; }
+        .btn-brand:hover { background: var(--primary); }
 
-        /* الجدول والشارات */
-        .table th { color: #94a3b8; font-weight: 800; padding: 15px; border-bottom: 2px solid #f1f5f9; text-transform: uppercase; }
-        .table td { padding: 20px 15px; vertical-align: middle; font-weight: 700; border-bottom: 1px solid #f8fafc; color: var(--navy); }
+        /* الجدول الشامل */
+        .table-responsive { overflow-x: auto; }
+        .table th { background: #f8f9fa; color: #495057; font-weight: 800; font-size: 0.85rem; padding: 15px; white-space: nowrap; }
+        .table td { padding: 15px; vertical-align: middle; font-weight: 600; border-bottom: 1px solid #f0f0f0; }
         
-        .role-badge { padding: 8px 14px; border-radius: 10px; font-size: 0.8rem; font-weight: 900; margin: 3px; display: inline-flex; align-items: center; gap: 5px; }
-        .role-badge.admin { background: #ffe4e6; color: #e11d48; }
-        .role-badge.auditor { background: #fef3c7; color: #d97706; }
-        .role-badge.insp { background: #dcfce7; color: #16a34a; }
-        .role-badge.inst { background: #e0f2fe; color: #0284c7; }
+        .badge-role { padding: 5px 10px; border-radius: 4px; font-size: 0.75rem; background: #e9ecef; color: #495057; margin: 2px; display: inline-block; }
+        .status-badge { padding: 5px 12px; border-radius: 50px; font-size: 0.75rem; font-weight: 700; }
         
-        .status-badge { padding: 6px 12px; border-radius: 50px; font-size: 0.8rem; font-weight: 800; display: inline-block; }
-        .status-active { background: #10b981; color: white; box-shadow: 0 5px 15px rgba(16,185,129,0.3); }
-        .status-suspended { background: #ef4444; color: white; box-shadow: 0 5px 15px rgba(239,68,68,0.3); }
-        
-        /* أزرار الإجراءات */
-        .btn-action { width: 38px; height: 38px; border-radius: 12px; display: inline-flex; align-items: center; justify-content: center; border: none; transition: 0.3s; margin-left: 5px; font-size: 1rem; color: white; }
-        .btn-edit { background: #3b82f6; box-shadow: 0 5px 15px rgba(59,130,246,0.3); } .btn-edit:hover { background: #2563eb; transform: translateY(-2px); }
-        .btn-suspend { background: #f59e0b; box-shadow: 0 5px 15px rgba(245,158,11,0.3); } .btn-suspend:hover { background: #d97706; transform: translateY(-2px); }
-        .btn-delete { background: #ef4444; box-shadow: 0 5px 15px rgba(239,68,68,0.3); } .btn-delete:hover { background: #dc2626; transform: translateY(-2px); }
+        .btn-action { background: none; border: none; padding: 5px 10px; border-radius: 4px; font-size: 1rem; transition: 0.2s; }
+        .btn-edit { color: var(--accent); } .btn-edit:hover { background: #e3f2fd; }
+        .btn-suspend { color: #fd7e14; } .btn-suspend:hover { background: #fff3cd; }
+        .btn-delete { color: #dc3545; } .btn-delete:hover { background: #f8d7da; }
     </style>
 </head>
 <body>
 
 <div class="sidebar">
-    <div class="brand"><i class="fa-solid fa-droplet"></i> <span>QATRA</span></div>
-    
-    <a href="employee_dashboard.php" class="nav-link" style="background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1);"><i class="fa-solid fa-arrow-right"></i> العودة لشاشة التوجيه</a>
-    <div style="margin: 15px 0; border-bottom: 1px solid rgba(255,255,255,0.1);"></div>
-    
-    <a href="#" class="nav-link active"><i class="fa-solid fa-users"></i> إدارة الموظفين</a>
-    <a href="#" class="nav-link"><i class="fa-solid fa-chart-pie"></i> التقارير الذكية</a>
-    <a href="#" class="nav-link"><i class="fa-solid fa-shield-halved"></i> سجل التدقيق</a>
-    
+    <div class="sidebar-brand"><i class="fa-solid fa-droplet text-info"></i> قطرة</div>
+    <a href="employee_dashboard.php" class="nav-link"><i class="fa-solid fa-house"></i> شاشة التوجيه</a>
+    <a href="#" class="nav-link active"><i class="fa-solid fa-users-gear"></i> الإدارة الشاملة</a>
     <div style="margin-top: auto;">
-        <a href="logout.php" class="nav-link" style="background: rgba(239,68,68,0.15); color: #fca5a5;"><i class="fa-solid fa-power-off"></i> تسجيل الخروج</a>
+        <a href="logout.php" class="nav-link text-danger"><i class="fa-solid fa-power-off"></i> خروج</a>
     </div>
 </div>
 
 <div class="main-content">
-    <div class="page-header">
+    
+    <div class="d-flex justify-content-between align-items-center mb-4">
         <div>
-            <h2>المنصة الإدارية الشاملة</h2>
-            <p class="text-muted fw-bold m-0 mt-1">تحكم كامل بصلاحيات وبيانات كادر النظام</p>
+            <h3 class="fw-bold" style="color: var(--primary);">إدارة الموارد البشرية</h3>
+            <p class="text-muted fw-bold m-0">قاعدة البيانات الشاملة لجميع الموظفين والصلاحيات</p>
         </div>
-        <div class="d-flex align-items-center gap-3">
-            <div class="text-end">
-                <div class="fw-black text-dark" style="font-size: 1.1rem;"><?= htmlspecialchars($_SESSION['emp_name']); ?></div>
-                <div class="text-primary fw-bold" style="font-size: 0.85rem;">المدير العام للنظام</div>
-            </div>
-            <div style="width: 55px; height: 55px; background: linear-gradient(135deg, #3b82f6, #1e3a8a); color: white; border-radius: 16px; display: flex; align-items: center; justify-content: center; font-size: 1.5rem; box-shadow: 0 10px 20px rgba(59,130,246,0.4);"><i class="fa-solid fa-user-tie"></i></div>
+        <div class="text-end">
+            <div class="fw-bold"><?= htmlspecialchars($_SESSION['emp_name']); ?></div>
+            <div class="text-info fw-bold" style="font-size: 0.85rem;">مدير النظام</div>
         </div>
     </div>
 
     <?php if($msg): ?>
-        <div class="alert alert-<?= $msgType ?> fw-bold rounded-4 p-4 shadow-sm" style="font-size: 1.1rem;"><i class="fa-solid fa-bell me-2"></i><?= $msg; ?></div>
+        <div class="alert alert-<?= $msgType ?> fw-bold"><i class="fa-solid fa-circle-info me-2"></i><?= $msg; ?></div>
     <?php endif; ?>
 
-    <div class="row g-4 mb-4">
-        <div class="col-md-6">
-            <div class="stat-card bg-gradient-blue">
-                <div>
-                    <h5 class="fw-bold opacity-75 mb-2">إجمالي الموظفين</h5>
-                    <h2 class="fw-black m-0" style="font-size: 3rem;"><?= $empCount; ?></h2>
-                </div>
-                <i class="fa-solid fa-users" style="font-size: 4rem; opacity: 0.2;"></i>
-            </div>
-        </div>
-        <div class="col-md-6">
-            <div class="stat-card bg-gradient-purple">
-                <div>
-                    <h5 class="fw-bold opacity-75 mb-2">الصلاحيات المهيأة</h5>
-                    <h2 class="fw-black m-0" style="font-size: 3rem;"><?= count($rolesList); ?></h2>
-                </div>
-                <i class="fa-solid fa-layer-group" style="font-size: 4rem; opacity: 0.2;"></i>
-            </div>
-        </div>
-    </div>
-
     <div class="row g-4">
-        <!-- نموذج الإضافة الاحترافي -->
-        <div class="col-lg-4">
-            <div class="card-custom h-100">
-                <h4 class="fw-black mb-4" style="color: var(--navy);"><i class="fa-solid fa-user-plus me-2" style="color: #3b82f6;"></i> إصدار حساب</h4>
+        <!-- 🌟 نموذج الإضافة الشامل -->
+        <div class="col-lg-3">
+            <div class="corporate-card h-100">
+                <div class="card-header-title">إضافة موظف</div>
                 <form method="POST">
                     <div class="mb-3">
-                        <label class="form-label fw-bold">الاسم الرباعي</label>
-                        <input type="text" name="emp_name" class="form-control" required placeholder="أدخل اسم الموظف">
+                        <label class="form-label">اسم الموظف</label>
+                        <input type="text" name="emp_name" class="form-control" required>
                     </div>
                     <div class="mb-3">
-                        <label class="form-label fw-bold">البريد الإلكتروني الرسمي</label>
-                        <input type="email" name="emp_email" class="form-control text-start" dir="ltr" required placeholder="name@qatra.com">
+                        <label class="form-label">البريد الإلكتروني</label>
+                        <input type="email" name="emp_email" class="form-control" dir="ltr" required>
                     </div>
-                    <div class="mb-4">
-                        <label class="form-label fw-bold">كلمة المرور المؤقتة</label>
-                        <input type="password" name="password" class="form-control text-start" dir="ltr" required placeholder="*****">
+                    <div class="mb-3">
+                        <label class="form-label">كلمة المرور</label>
+                        <input type="password" name="password" class="form-control" dir="ltr" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">المدينة / المنطقة</label>
+                        <select name="cty_id" class="form-select" required>
+                            <?php foreach($cities as $c): ?>
+                                <option value="<?= $c['cty_id'] ?>"><?= $c['cty_name'] ?></option>
+                            <?php endforeach; ?>
+                        </select>
                     </div>
                     
-                    <label class="form-label fw-bold mb-3">الصلاحيات (اختر واحدة أو أكثر):</label>
-                    <div class="role-check-group mb-5">
+                    <label class="form-label">تحديد الصلاحيات</label>
+                    <div class="checkbox-group mb-4">
                         <?php foreach($rolesList as $role): 
-                            $icon = 'fa-check'; $label = $role['role_name'];
-                            if($label == 'Admin') { $icon = 'fa-user-tie'; $label = 'مدير'; }
-                            elseif($label == 'Auditor') { $icon = 'fa-file-signature'; $label = 'مدقق'; }
-                            elseif($label == 'Inspection Technician') { $icon = 'fa-clipboard-check'; $label = 'فني فحص'; }
-                            elseif($label == 'Installation Technician') { $icon = 'fa-wrench'; $label = 'فني تركيب'; }
+                            $label = $role['role_name'];
+                            if($label == 'Admin') $label = 'مدير'; elseif($label == 'Auditor') $label = 'مدقق';
+                            elseif($label == 'Inspection Technician') $label = 'فني فحص'; elseif($label == 'Installation Technician') $label = 'فني تركيب';
                         ?>
                             <div>
                                 <input type="checkbox" name="roles[]" id="role_<?= $role['role_id'] ?>" value="<?= $role['role_id'] ?>">
-                                <label class="role-check-label" for="role_<?= $role['role_id'] ?>"><i class="fa-solid <?= $icon ?>"></i> <?= $label ?></label>
+                                <label for="role_<?= $role['role_id'] ?>"><?= $label ?></label>
                             </div>
                         <?php endforeach; ?>
                     </div>
-                    <button type="submit" name="add_employee" class="btn-gradient">تسجيل واعتماد <i class="fa-solid fa-check ms-1"></i></button>
+                    <button type="submit" name="add_employee" class="btn-brand">حفظ البيانات</button>
                 </form>
             </div>
         </div>
 
-        <!-- جدول الموظفين الملون -->
-        <div class="col-lg-8">
-            <div class="card-custom h-100">
-                <h4 class="fw-black mb-4" style="color: var(--navy);"><i class="fa-solid fa-server me-2" style="color: #3b82f6;"></i> قاعدة بيانات النظام</h4>
+        <!-- 🌟 الجدول الشامل لجميع بيانات الموظف -->
+        <div class="col-lg-9">
+            <div class="corporate-card h-100">
+                <div class="card-header-title">
+                    سجلات الموظفين (<?= $empCount ?>)
+                </div>
                 <div class="table-responsive">
                     <table class="table">
                         <thead>
                             <tr>
-                                <th>اسم الموظف</th>
-                                <th>الأدوار المسندة</th>
+                                <th>الموظف</th>
+                                <th>المدينة</th>
+                                <th>الصلاحيات</th>
+                                <th class="text-center">المهام النشطة</th>
                                 <th>الحالة</th>
                                 <th>الإجراءات</th>
                             </tr>
@@ -271,100 +257,103 @@ $rolesList = $pdo->query("SELECT MIN(role_id) as role_id, role_name FROM system_
                             <?php foreach($employeesData as $emp): ?>
                             <tr>
                                 <td>
-                                    <div class="d-flex align-items-center gap-3">
-                                        <div style="width: 45px; height: 45px; background: #f8fafc; border: 2px solid #e2e8f0; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-weight: 900; color: #3b82f6; font-size: 1.2rem;">
-                                            <?= mb_substr($emp['emp_name'], 0, 1, 'UTF-8') ?>
-                                        </div>
-                                        <div>
-                                            <div class="fw-black" style="font-size: 1.1rem;"><?= htmlspecialchars($emp['emp_name']) ?></div>
-                                            <div class="text-muted fw-bold" style="font-size: 0.85rem; font-family: Tahoma;"><?= htmlspecialchars($emp['emp_email']) ?></div>
-                                        </div>
-                                    </div>
+                                    <div class="fw-bold" style="color: var(--primary);"><?= htmlspecialchars($emp['emp_name']) ?></div>
+                                    <div class="text-muted" style="font-size: 0.8rem; font-family: Tahoma;"><?= htmlspecialchars($emp['emp_email']) ?></div>
                                 </td>
+                                <td class="text-muted"><?= htmlspecialchars($emp['cty_name'] ?? 'غير محدد') ?></td>
                                 <td>
                                     <?php 
                                         if ($emp['roles']) {
-                                            $empRolesArray = explode(',', $emp['roles']);
-                                            foreach($empRolesArray as $r) {
-                                                $class = 'role-badge'; $icon = ''; $translated = $r;
-                                                if($r == 'Admin') { $class .= ' admin'; $icon = 'fa-user-tie'; $translated = 'مدير'; }
-                                                elseif($r == 'Auditor') { $class .= ' auditor'; $icon = 'fa-file-signature'; $translated = 'مدقق'; }
-                                                elseif($r == 'Inspection Technician') { $class .= ' insp'; $icon = 'fa-clipboard-check'; $translated = 'فحص'; }
-                                                elseif($r == 'Installation Technician') { $class .= ' inst'; $icon = 'fa-wrench'; $translated = 'تركيب'; }
-                                                echo "<span class='$class'><i class='fa-solid $icon'></i> $translated</span>";
+                                            foreach(explode(',', $emp['roles']) as $r) {
+                                                $translated = $r;
+                                                if($r == 'Admin') $translated = 'مدير'; elseif($r == 'Auditor') $translated = 'مدقق';
+                                                elseif($r == 'Inspection Technician') $translated = 'فحص'; elseif($r == 'Installation Technician') $translated = 'تركيب';
+                                                echo "<span class='badge-role'>$translated</span>";
                                             }
-                                        } else { echo "<span class='badge bg-secondary rounded-pill'>-</span>"; }
+                                        } else { echo "<span class='text-muted'>-</span>"; }
                                     ?>
+                                </td>
+                                <td class="text-center">
+                                    <?php if(strpos($emp['roles'], 'Technician') !== false): ?>
+                                        <span class="badge bg-<?= $emp['active_tasks_count'] > 3 ? 'danger' : 'info' ?> rounded-pill"><?= $emp['active_tasks_count'] ?></span>
+                                    <?php else: ?>
+                                        <span class="text-muted">-</span>
+                                    <?php endif; ?>
                                 </td>
                                 <td>
                                     <?php if($emp['is_active']): ?>
-                                        <span class="status-badge status-active">نشط</span>
+                                        <span class="status-badge bg-success text-white">نشط</span>
                                     <?php else: ?>
-                                        <span class="status-badge status-suspended">موقوف</span>
+                                        <span class="status-badge bg-danger text-white">موقوف</span>
                                     <?php endif; ?>
                                 </td>
                                 <td>
                                     <div class="d-flex">
                                         <!-- زر التعديل -->
-                                        <button type="button" class="btn-action btn-edit" data-bs-toggle="modal" data-bs-target="#editModal<?= $emp['emp_id'] ?>" title="تعديل"><i class="fa-solid fa-pen"></i></button>
+                                        <button class="btn-action btn-edit" data-bs-toggle="modal" data-bs-target="#editModal<?= $emp['emp_id'] ?>" title="تعديل"><i class="fa-solid fa-pen-to-square"></i></button>
                                         <!-- الإيقاف -->
                                         <form method="POST" style="display:inline;">
                                             <input type="hidden" name="target_emp_id" value="<?= $emp['emp_id'] ?>">
-                                            <button type="submit" name="toggle_status" class="btn-action btn-suspend" title="<?= $emp['is_active'] ? 'إيقاف مؤقت' : 'تفعيل' ?>"><i class="fa-solid <?= $emp['is_active'] ? 'fa-ban' : 'fa-play' ?>"></i></button>
+                                            <button type="submit" name="toggle_status" class="btn-action btn-suspend" title="تغيير الحالة"><i class="fa-solid fa-power-off"></i></button>
                                         </form>
                                         <!-- الحذف -->
-                                        <form method="POST" style="display:inline;" onsubmit="return confirm('تأكيد الحذف النهائي؟');">
+                                        <form method="POST" style="display:inline;" onsubmit="return confirm('تأكيد الحذف؟');">
                                             <input type="hidden" name="target_emp_id" value="<?= $emp['emp_id'] ?>">
-                                            <button type="submit" name="delete_employee" class="btn-action btn-delete" title="حذف"><i class="fa-solid fa-trash"></i></button>
+                                            <button type="submit" name="delete_employee" class="btn-action btn-delete" title="حذف"><i class="fa-solid fa-trash-can"></i></button>
                                         </form>
                                     </div>
 
-                                    <!-- Modal للتعديل -->
-                                    <div class="modal fade" id="editModal<?= $emp['emp_id'] ?>" tabindex="-1" aria-hidden="true">
-                                      <div class="modal-dialog modal-dialog-centered">
-                                        <div class="modal-content" style="border-radius: 24px; border: none; padding: 15px;">
-                                          <div class="modal-header border-0">
-                                            <h4 class="modal-title fw-black"><i class="fa-solid fa-pen-to-square text-primary me-2"></i> تحديث البيانات</h4>
-                                            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                                    <!-- 🌟 نافذة التعديل الشاملة -->
+                                    <div class="modal fade" id="editModal<?= $emp['emp_id'] ?>" tabindex="-1">
+                                      <div class="modal-dialog">
+                                        <div class="modal-content" style="border-radius: 8px;">
+                                          <div class="modal-header">
+                                            <h5 class="modal-title fw-bold">تحديث السجل</h5>
+                                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                                           </div>
                                           <form method="POST">
                                               <div class="modal-body">
                                                   <input type="hidden" name="edit_emp_id" value="<?= $emp['emp_id'] ?>">
                                                   <div class="mb-3">
-                                                      <label class="form-label fw-bold">اسم الموظف</label>
+                                                      <label class="form-label">الاسم</label>
                                                       <input type="text" name="edit_emp_name" class="form-control" value="<?= htmlspecialchars($emp['emp_name']) ?>" required>
                                                   </div>
-                                                  <div class="mb-4">
-                                                      <label class="form-label fw-bold">البريد الإلكتروني</label>
-                                                      <input type="email" name="edit_emp_email" class="form-control text-start" dir="ltr" value="<?= htmlspecialchars($emp['emp_email']) ?>" required>
+                                                  <div class="mb-3">
+                                                      <label class="form-label">الإيميل</label>
+                                                      <input type="email" name="edit_emp_email" class="form-control" dir="ltr" value="<?= htmlspecialchars($emp['emp_email']) ?>" required>
                                                   </div>
-                                                  <label class="form-label fw-bold mb-3">تحديث الصلاحيات:</label>
-                                                  <div class="role-check-group">
+                                                  <div class="mb-3">
+                                                      <label class="form-label">المدينة</label>
+                                                      <select name="edit_cty_id" class="form-select" required>
+                                                          <?php foreach($cities as $c): ?>
+                                                              <option value="<?= $c['cty_id'] ?>" <?= $emp['cty_id'] == $c['cty_id'] ? 'selected' : '' ?>><?= $c['cty_name'] ?></option>
+                                                          <?php endforeach; ?>
+                                                      </select>
+                                                  </div>
+                                                  <label class="form-label">الصلاحيات:</label>
+                                                  <div class="checkbox-group">
                                                       <?php 
                                                       $empCurrentRoles = explode(',', $emp['role_ids'] ?? '');
                                                       foreach($rolesList as $role): 
                                                           $isChecked = in_array($role['role_id'], $empCurrentRoles) ? 'checked' : '';
                                                           $label = $role['role_name'];
-                                                          if($label == 'Admin') $label = 'مدير';
-                                                          elseif($label == 'Auditor') $label = 'مدقق';
-                                                          elseif($label == 'Inspection Technician') $label = 'فحص';
-                                                          elseif($label == 'Installation Technician') $label = 'تركيب';
+                                                          if($label == 'Admin') $label = 'مدير'; elseif($label == 'Auditor') $label = 'مدقق';
+                                                          elseif($label == 'Inspection Technician') $label = 'فحص'; elseif($label == 'Installation Technician') $label = 'تركيب';
                                                       ?>
                                                           <div>
                                                               <input type="checkbox" name="edit_roles[]" id="edit_role_<?= $emp['emp_id'] ?>_<?= $role['role_id'] ?>" value="<?= $role['role_id'] ?>" <?= $isChecked ?>>
-                                                              <label class="role-check-label" for="edit_role_<?= $emp['emp_id'] ?>_<?= $role['role_id'] ?>"><?= $label ?></label>
+                                                              <label for="edit_role_<?= $emp['emp_id'] ?>_<?= $role['role_id'] ?>"><?= $label ?></label>
                                                           </div>
                                                       <?php endforeach; ?>
                                                   </div>
                                               </div>
-                                              <div class="modal-footer border-0">
-                                                <button type="submit" name="edit_employee" class="btn-gradient w-100">حفظ التغييرات</button>
+                                              <div class="modal-footer">
+                                                <button type="submit" name="edit_employee" class="btn-brand">حفظ</button>
                                               </div>
                                           </form>
                                         </div>
                                       </div>
                                     </div>
-
                                 </td>
                             </tr>
                             <?php endforeach; ?>
