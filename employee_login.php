@@ -95,7 +95,8 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
         
         .login-card { background: rgba(255, 255, 255, 0.97); backdrop-filter: blur(20px); border-radius: 24px; padding: 45px 50px; width: 100%; max-width: 450px; z-index: 10; box-shadow: 0 25px 60px rgba(0, 0, 0, 0.4); }
         .css-logo { text-align: center; margin-bottom: 25px; }
-        .css-logo .droplet-icon { font-size: 3.5rem; background: -webkit-linear-gradient(45deg, var(--qatra-cyan), #ffffff); -webkit-background-clip: text; -webkit-text-fill-color: transparent; filter: drop-shadow(0 10px 15px rgba(125, 211, 252, 0.4)); margin-bottom: 10px; }
+        .css-logo .droplet-mark { width: 55px; height: 63px; margin: 0 auto 10px; filter: drop-shadow(0 10px 15px rgba(125, 211, 252, 0.4)); animation: pulseGlow 2s infinite alternate; }
+        @keyframes pulseGlow { 0% { filter: drop-shadow(0 5px 15px rgba(125, 211, 252, 0.2)); transform: scale(1); } 100% { filter: drop-shadow(0 15px 25px rgba(125, 211, 252, 0.6)); transform: scale(1.05); } }
         .css-logo .brand-name-en { font-size: 1.8rem; font-weight: 900; letter-spacing: 4px; color: white; margin-bottom: -5px; }
         .header-title { text-align: center; margin-bottom: 30px; color: var(--qatra-navy); }
         .badge-system { background: #f1f5f9; color: var(--qatra-blue); padding: 6px 15px; border-radius: 50px; font-size: 0.85rem; font-weight: 800; border: 1px solid #e2e8f0; display: inline-flex; align-items: center; gap: 6px; margin-bottom: 10px; }
@@ -148,7 +149,39 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
 
     <div class="login-card">
         <div class="css-logo">
-            <i class="fa-solid fa-droplet droplet-icon"></i>
+            <svg class="droplet-mark" viewBox="0 0 60 68" xmlns="http://www.w3.org/2000/svg">
+                <circle cx="30" cy="6"  r="2.1" fill="#bae6fd"/>
+
+                <circle cx="26.3" cy="13" r="2.3" fill="#bae6fd"/>
+                <circle cx="33.7" cy="13" r="2.3" fill="#93c5fd"/>
+
+                <circle cx="22.6" cy="20" r="2.6" fill="#93c5fd"/>
+                <circle cx="30"   cy="20" r="2.6" fill="#7dd3fc"/>
+                <circle cx="37.4" cy="20" r="2.6" fill="#60a5fa"/>
+
+                <circle cx="18.9" cy="27" r="2.9" fill="#7dd3fc"/>
+                <circle cx="26.3" cy="27" r="2.9" fill="#60a5fa"/>
+                <circle cx="33.7" cy="27" r="2.9" fill="#4492d4"/>
+                <circle cx="41.1" cy="27" r="2.9" fill="#3b82f6"/>
+
+                <circle cx="15.2" cy="34" r="3.3" fill="#60a5fa"/>
+                <circle cx="22.6" cy="34" r="3.3" fill="#4492d4"/>
+                <circle cx="30"   cy="34" r="3.3" fill="#3b82f6"/>
+                <circle cx="37.4" cy="34" r="3.3" fill="#2563eb"/>
+                <circle cx="44.8" cy="34" r="3.3" fill="#1d4ed8"/>
+
+                <circle cx="18.9" cy="41" r="3.6" fill="#2563eb"/>
+                <circle cx="26.3" cy="41" r="3.6" fill="#1d4ed8"/>
+                <circle cx="33.7" cy="41" r="3.6" fill="#bae6fd"/>
+                <circle cx="41.1" cy="41" r="3.6" fill="#bae6fd"/>
+
+                <circle cx="22.6" cy="48" r="3.8" fill="#7dd3fc"/>
+                <circle cx="30"   cy="48" r="3.8" fill="#e0f2fe"/>
+                <circle cx="37.4" cy="48" r="3.8" fill="#7dd3fc"/>
+
+                <circle cx="26.3" cy="55" r="3.9" fill="#e0f2fe"/>
+                <circle cx="33.7" cy="55" r="3.9" fill="#e0f2fe"/>
+            </svg>
             <div class="brand-name-en" style="color: var(--qatra-navy);">QATRA</div>
         </div>
         <div class="header-title">
