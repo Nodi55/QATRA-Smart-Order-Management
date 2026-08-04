@@ -12,6 +12,25 @@ require_once 'db_connect.php';
 $msg = ""; $msgType = "";
 
 // =========================================================
+// (إصلاح) التأكد من وجود عمود is_active في الجدول قبل أي استعلام
+// يمنع ظهور خطأ: Unknown column 'ce.is_active' لو الجدول قديم/ناقص
+// =========================================================
+try {
+    $pdo->query("SELECT is_active FROM company_employee LIMIT 1");
+} catch (PDOException $e) {
+    $pdo->exec("ALTER TABLE company_employee ADD COLUMN is_active TINYINT(1) DEFAULT 1");
+    $pdo->exec("UPDATE company_employee SET is_active = 1 WHERE is_active IS NULL");
+}
+
+// (إصلاح إضافي) التأكد من وجود عمود active_tasks_count أيضاً لنفس السبب
+try {
+    $pdo->query("SELECT active_tasks_count FROM company_employee LIMIT 1");
+} catch (PDOException $e) {
+    $pdo->exec("ALTER TABLE company_employee ADD COLUMN active_tasks_count INT DEFAULT 0");
+    $pdo->exec("UPDATE company_employee SET active_tasks_count = 0 WHERE active_tasks_count IS NULL");
+}
+
+// =========================================================
 // معالجة العمليات (إضافة، تعديل، إيقاف، التوزيع الجغرافي واليدوي)
 // =========================================================
 if ($_SERVER["REQUEST_METHOD"] == "POST") {
@@ -42,7 +61,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
         $selectedRoles = $_POST['edit_roles'] ?? [];
         try {
             $pdo->prepare("UPDATE company_employee SET emp_name=?, emp_email=?, cty_id=? WHERE emp_id=?")->execute([$eName, $eEmail, $eCty, $eId]);
-            $pdo->prepare("DELETE FROM employee_roles WHERE emp_id=? AND role_id IN (SELECT role_id FROM system_role WHERE role_name != 'Admin')")->execute([$eId]);
+            $pdo->prepare("DELETE FROM employee_roles WHERE emp_id=?")->execute([$eId]);
             foreach ($selectedRoles as $rId) { $pdo->prepare("INSERT INTO employee_roles (emp_id, role_id) VALUES (?, ?)")->execute([$eId, $rId]); }
             $msg = "تم تحديث بيانات الموظف بنجاح."; $msgType = "success";
         } catch (Exception $e) { $msg = "خطأ في التحديث."; $msgType = "error"; }
@@ -141,7 +160,18 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
 // جلب البيانات وإعداد التقارير والإحصائيات الجديدة
 // =========================================================
 $cities = $pdo->query("SELECT * FROM city")->fetchAll(PDO::FETCH_ASSOC);
-$rolesList = $pdo->query("SELECT MIN(role_id) as role_id, role_name FROM system_role WHERE role_name != 'Admin' GROUP BY role_name")->fetchAll(PDO::FETCH_ASSOC);
+$rolesList = $pdo->query("SELECT MIN(role_id) as role_id, role_name FROM system_role GROUP BY role_name")->fetchAll(PDO::FETCH_ASSOC);
+
+// دالة موحّدة لتسمية الصلاحيات بالعربي (تُستخدم في نموذج الإضافة ونافذة التعديل)
+function roleLabelAr($roleName) {
+    switch ($roleName) {
+        case 'Admin': return 'مدير النظام';
+        case 'Auditor': return 'مدقق طلبات';
+        case 'Inspection Technician': return 'فني فحص';
+        case 'Installation Technician': return 'فني تركيب';
+        default: return $roleName;
+    }
+}
 
 // إحصائيات عامة للنظام
 $totalApps = $pdo->query("SELECT COUNT(*) FROM application")->fetchColumn();
@@ -281,7 +311,7 @@ $rejectedApps = $pdo->query("
             <?php if($msg): ?>
                 <script>
                     document.addEventListener('DOMContentLoaded', function() {
-                        Swal.fire({ icon: '<?= $msgType ?>', title: 'إشعار النظام', text: '<?= $msg ?>', confirmButtonColor: '#0b457f' });
+                        Swal.fire({ icon: '<?= $msgType ?>', title: 'إشعار النظام', text: '<?= addslashes($msg) ?>', confirmButtonColor: '#0b457f' });
                     });
                 </script>
             <?php endif; ?>
@@ -499,7 +529,7 @@ $rejectedApps = $pdo->query("
                                 <label class="fw-bold mb-2">تحديد الصلاحيات:</label>
                                 <div class="mb-4 p-3 border rounded bg-light">
                                     <?php foreach($rolesList as $role): 
-                                        $lbl = ($role['role_name'] == 'Auditor' ? 'مدقق طلبات' : ($role['role_name'] == 'Inspection Technician' ? 'فني فحص' : 'فني تركيب'));
+                                        $lbl = roleLabelAr($role['role_name']);
                                     ?>
                                         <div class="form-check mb-2">
                                             <input class="form-check-input" type="checkbox" name="roles[]" value="<?= $role['role_id'] ?>" id="r_<?= $role['role_id'] ?>">
@@ -566,7 +596,7 @@ $rejectedApps = $pdo->query("
                                                                             $empCurrentRoles = explode(',', $emp['role_ids'] ?? '');
                                                                             foreach($rolesList as $role): 
                                                                                 $isChecked = in_array($role['role_id'], $empCurrentRoles) ? 'checked' : '';
-                                                                                $lbl = ($role['role_name'] == 'Auditor' ? 'مدقق' : ($role['role_name'] == 'Inspection Technician' ? 'فحص' : 'تركيب'));
+                                                                                $lbl = roleLabelAr($role['role_name']);
                                                                             ?>
                                                                                 <div class="form-check mb-2">
                                                                                     <input class="form-check-input" type="checkbox" name="edit_roles[]" id="edit_role_<?= $emp['emp_id'] ?>_<?= $role['role_id'] ?>" value="<?= $role['role_id'] ?>" <?= $isChecked ?>>

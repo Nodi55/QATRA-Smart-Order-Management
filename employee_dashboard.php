@@ -91,7 +91,7 @@ if (isset($_GET['active_role']) && in_array($_GET['active_role'], $roles)) {
         <?php endif; ?>
 
         <?php if(in_array('Inspection Technician', $roles)): ?>
-        <a href="?active_role=Inspection Technician" class="role-card">
+        <a href="?active_role=<?= urlencode('Inspection Technician') ?>" class="role-card">
             <div class="role-icon"><i class="fa-solid fa-clipboard-check"></i></div>
             <div class="role-title">فني فحص</div>
             <div class="role-desc">إجراء الفحص الميداني للموقع ورفع الصور للطلبات.</div>
@@ -99,7 +99,7 @@ if (isset($_GET['active_role']) && in_array($_GET['active_role'], $roles)) {
         <?php endif; ?>
 
         <?php if(in_array('Installation Technician', $roles)): ?>
-        <a href="?active_role=Installation Technician" class="role-card">
+        <a href="?active_role=<?= urlencode('Installation Technician') ?>" class="role-card">
             <div class="role-icon"><i class="fa-solid fa-wrench"></i></div>
             <div class="role-title">فني تركيب</div>
             <div class="role-desc">استلام مهام التركيب للعدادات وتسجيل القراءات.</div>

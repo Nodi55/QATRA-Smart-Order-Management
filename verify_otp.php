@@ -328,7 +328,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
         navigator.clipboard.writeText(otpCode).then(() => {
             Swal.fire({
                 toast: true,
-                position: 'top-end',
+                position: 'top-end',ً
                 icon: 'success',
                 title: 'تم نسخ الرمز بنجاح!',
                 showConfirmButton: false,

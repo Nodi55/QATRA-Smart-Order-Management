@@ -178,6 +178,10 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
         }
         .btn-brand:hover { transform: translateY(-3px); box-shadow: 0 15px 35px rgba(11, 69, 127, 0.5); color: white; }
 
+        .forgot-link { text-align: left; margin-top: -14px; margin-bottom: 20px; }
+        .forgot-link a { color: var(--qatra-light); text-decoration: none; font-weight: 700; font-size: 0.88rem; }
+        .forgot-link a:hover { color: var(--qatra-blue); text-decoration: underline; }
+
         .footer-links { text-align: center; margin-top: 30px; font-weight: 700; color: #64748b; }
         .footer-links a { color: var(--qatra-light); text-decoration: none; transition: 0.3s; }
         .footer-links a:hover { color: var(--qatra-blue); }
@@ -280,12 +284,16 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
             </div>
         </div>
 
-        <div class="mb-4">
+        <div class="mb-2">
             <label class="form-label">كلمة المرور</label>
             <div class="input-group" style="direction: ltr;">
                 <input type="password" name="password" class="form-control text-end" placeholder="أدخل كلمة المرور" required>
                 <span class="input-group-text"><i class="fa-solid fa-lock"></i></span>
             </div>
+        </div>
+
+        <div class="forgot-link">
+            <a href="forgot_password.php">نسيت كلمة المرور؟</a>
         </div>
 
         <button type="submit" class="btn-brand">دخول المنصة <i class="fa-solid fa-arrow-left ms-2"></i></button>
@@ -305,6 +313,21 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
             icon: 'success',
             title: 'مرحباً بك في قطرة!',
             text: 'تم إنشاء حسابك بنجاح، يمكنك الآن تسجيل الدخول بهويتك.',
+            confirmButtonColor: '#0b457f',
+            backdrop: `rgba(9,46,84,0.6)`
+        });
+    });
+</script>
+<?php endif; ?>
+
+<!-- رسالة النجاح عند إعادة تعيين كلمة المرور بنجاح -->
+<?php if(isset($_GET['reset']) && $_GET['reset'] == 'success'): ?>
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        Swal.fire({
+            icon: 'success',
+            title: 'تم التحديث بنجاح!',
+            text: 'تم تغيير كلمة المرور بنجاح، يمكنك الآن تسجيل الدخول بكلمة المرور الجديدة.',
             confirmButtonColor: '#0b457f',
             backdrop: `rgba(9,46,84,0.6)`
         });
