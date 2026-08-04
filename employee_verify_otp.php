@@ -31,6 +31,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
             $pdo->prepare("UPDATE otp_code SET is_used = 1 WHERE otp_id = ?")->execute([$validOtp['otp_id']]);
         } catch(PDOException $e) {}
 
+
         $_SESSION['emp_id'] = $_SESSION['temp_emp_id'];
         $_SESSION['emp_name'] = $_SESSION['temp_emp_name'];
         $_SESSION['emp_email'] = $_SESSION['temp_emp_email'];
