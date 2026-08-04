@@ -42,6 +42,7 @@ function cleanServiceName($name) {
 
 // =========================================================
 // معالجة تقديم طلب جديد ومطابقة الصك الفورية (DSS)
+// وتقسيم طلب "مياه وصرف" إلى طلبين منفصلين تشغيلياً آلياً
 // =========================================================
 if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['submit_new_app'])) {
     header('Content-Type: application/json');
@@ -91,38 +92,76 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['submit_new_app'])) {
         $targetFilePath = $targetDir . $hashedFileName;
 
         if (move_uploaded_file($fileTmpPath, $targetFilePath)) {
-            $q = "INSERT INTO application (cty_id, latitude, longitude, deed_no, deed_file_url, app_status, cust_id, srv_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
-            $pdo->prepare($q)->execute([$cityId, $lat, $lng, $deedNumber, $targetFilePath, $appStatus, $custId, $srvId]);
-            $newAppId = $pdo->lastInsertId();
+            
+            // خوارزمية تقسيم الطلب: إذا تم اختيار "مياه وصرف" (3)، يتم إنشاء طلبين منفصلين: مياه (1) وصرف (2)
+            $servicesToInsert = [];
+            if ($srvId == 3) {
+                $servicesToInsert = [1, 2];
+            } else {
+                $servicesToInsert = [$srvId];
+            }
 
-            // إذا تطابق الصك 100% يمر الطلب للفحص الميداني، إسناده آلياً لفني فحص في نفس المدينة/المنطقة الأقل ضغطاً
-            if ($appStatus == 'Pending_Inspection') {
-                $bestTechStmt = $pdo->prepare("
-                    SELECT ce.emp_id 
-                    FROM company_employee ce
-                    JOIN employee_roles er ON ce.emp_id = er.emp_id 
-                    JOIN system_role sr ON er.role_id = sr.role_id
-                    JOIN city c ON ce.cty_id = c.cty_id
-                    WHERE ce.is_active = 1 AND sr.role_name = 'Inspection Technician'
-                    ORDER BY 
-                        (ce.cty_id = ?) DESC,
-                        (c.reg_id = (SELECT reg_id FROM city WHERE cty_id = ?)) DESC,
-                        ce.active_tasks_count ASC
-                    LIMIT 1
-                ");
-                $bestTechStmt->execute([$cityId, $cityId]);
-                $bestTechId = $bestTechStmt->fetchColumn();
+            $insertedCount = 0;
+            $appsDetails = [];
 
-                if ($bestTechId) {
-                    $pdo->prepare("INSERT INTO field_inspection (app_id, emp_id) VALUES (?, ?)")->execute([$newAppId, $bestTechId]);
-                    $pdo->prepare("UPDATE company_employee SET active_tasks_count = active_tasks_count + 1 WHERE emp_id = ?")->execute([$bestTechId]);
+            foreach ($servicesToInsert as $singleSrvId) {
+                // التحقق من عدم وجود طلب مكرر نشط لنفس الخدمة على هذا الصك منعاً للسبام
+                $stmtCheckDup = $pdo->prepare("SELECT COUNT(*) FROM application WHERE deed_no = ? AND srv_id = ? AND app_status != 'Rejected'");
+                $stmtCheckDup->execute([$deedNumber, $singleSrvId]);
+                if ($stmtCheckDup->fetchColumn() > 0) {
+                    continue; // تجاوز الخدمة المكررة
+                }
+
+                // إدراج الطلب الفردي في قاعدة البيانات
+                $q = "INSERT INTO application (cty_id, latitude, longitude, deed_no, deed_file_url, app_status, cust_id, srv_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
+                $pdo->prepare($q)->execute([$cityId, $lat, $lng, $deedNumber, $targetFilePath, $appStatus, $custId, $singleSrvId]);
+                $newAppId = $pdo->lastInsertId();
+                $insertedCount++;
+
+                $srvNameClean = ($singleSrvId == 1) ? 'مياه' : 'صرف';
+                $appsDetails[] = "طلب {$srvNameClean} رقم (#" . str_pad($newAppId, 5, '0', STR_PAD_LEFT) . ")";
+
+                // التوزيع الجغرافي الذكي لفنيي الفحص لكل طلب على حدة لتقليل العبء
+                if ($appStatus == 'Pending_Inspection') {
+                    $bestTechStmt = $pdo->prepare("
+                        SELECT ce.emp_id 
+                        FROM company_employee ce
+                        JOIN employee_roles er ON ce.emp_id = er.emp_id 
+                        JOIN system_role sr ON er.role_id = sr.role_id
+                        JOIN city c ON ce.cty_id = c.cty_id
+                        WHERE ce.is_active = 1 AND sr.role_name = 'Inspection Technician'
+                        ORDER BY 
+                            (ce.cty_id = ?) DESC,
+                            (c.reg_id = (SELECT reg_id FROM city WHERE cty_id = ?)) DESC,
+                            ce.active_tasks_count ASC
+                        LIMIT 1
+                    ");
+                    $bestTechStmt->execute([$cityId, $cityId]);
+                    $bestTechId = $bestTechStmt->fetchColumn();
+
+                    if ($bestTechId) {
+                        $pdo->prepare("INSERT INTO field_inspection (app_id, emp_id) VALUES (?, ?)")->execute([$newAppId, $bestTechId]);
+                        $pdo->prepare("UPDATE company_employee SET active_tasks_count = active_tasks_count + 1 WHERE emp_id = ?")->execute([$bestTechId]);
+                    }
                 }
             }
 
-            // إرسال الإشعار للمستفيد
-            $pdo->prepare("INSERT INTO notification (message_content, cust_id) VALUES (?, ?)")->execute([$notifMsg, $custId]);
+            if ($insertedCount == 0) {
+                echo json_encode(['status' => 'error', 'message' => 'عفواً، هذه الخدمات مسجلة أو نشطة بالفعل على هذا العقار مسبقاً.']);
+                exit;
+            }
 
-            echo json_encode(['status' => 'success', 'message' => 'تم تقديم الطلب بنجاح وتفعيل المطابقة الفورية للصك مع وزارة العدل.']);
+            // صياغة الإشعار والرد النهائي بناءً على عدد الطلبات التي تم إنشاؤها
+            if ($srvId == 3) {
+                $finalNotifMsg = "تم إنشاء طلبين منفصلين لعقارك بنجاح لتسريع الإنجاز والتركيب الميداني: " . implode(" و ", $appsDetails) . ". " . ($appStatus == 'Pending_Inspection' ? "تم توجيههما مباشرة للفحص الميداني الموزع." : "بانتظار المراجعة التدقيقية.");
+            } else {
+                $finalNotifMsg = $notifMsg . " تم إنشاء " . $appsDetails[0];
+            }
+
+            // إرسال الإشعار للمستفيد
+            $pdo->prepare("INSERT INTO notification (message_content, cust_id) VALUES (?, ?)")->execute([$finalNotifMsg, $custId]);
+
+            echo json_encode(['status' => 'success', 'message' => $finalNotifMsg]);
             exit;
         } else {
             echo json_encode(['status' => 'error', 'message' => 'فشل في رفع ملف الصك.']);
@@ -130,7 +169,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['submit_new_app'])) {
         }
 
     } catch (PDOException $e) {
-        echo json_encode(['status' => 'error', 'message' => 'حدث خطأ في النظام أثناء معالجة الطلب.']);
+        echo json_encode(['status' => 'error', 'message' => 'حدث خطأ في النظام أثناء معالجة الطلب: ' . $e->getMessage()]);
         exit;
     }
 }
@@ -248,18 +287,46 @@ try {
         if ($app['app_status'] == 'Pending_Billing') $stats['pending_payment']++;
     }
 
-    $propStmt = $pdo->prepare("
-        SELECT ua.acc_id, ua.deed_no, ua.creation_date, moj.land_area, moj.owner_name,
-               st.srv_name as active_service, m.mtr_serial, m.mtr_type
+    // جلب الحسابات الموحدة للعميل أولاً (حساب مفرّد لكل عقار/صك) لتجنب تكرار الصناديق
+    $stmtAcc = $pdo->prepare("
+        SELECT ua.acc_id, ua.deed_no, ua.creation_date, moj.land_area, moj.owner_name
         FROM unified_account ua
         JOIN moj_record moj ON ua.deed_no = moj.deed_no
-        LEFT JOIN activated_service acs ON ua.acc_id = acs.acc_id
-        LEFT JOIN service_type st ON acs.srv_id = st.srv_id
-        LEFT JOIN meter m ON ua.acc_id = m.acc_id
         WHERE ua.cust_id = ? ORDER BY ua.creation_date DESC
     ");
-    $propStmt->execute([$custId]);
-    $myProperties = $propStmt->fetchAll(PDO::FETCH_ASSOC);
+    $stmtAcc->execute([$custId]);
+    $accounts = $stmtAcc->fetchAll(PDO::FETCH_ASSOC);
+
+    $myProperties = [];
+    foreach ($accounts as $acc) {
+        $accId = $acc['acc_id'];
+
+        // جلب الخدمات المفعّلة لهذا الحساب الموحد
+        $stmtSrv = $pdo->prepare("
+            SELECT st.srv_id, st.srv_name 
+            FROM activated_service acs
+            JOIN service_type st ON acs.srv_id = st.srv_id
+            WHERE acs.acc_id = ?
+        ");
+        $stmtSrv->execute([$accId]);
+        $activeServices = $stmtSrv->fetchAll(PDO::FETCH_ASSOC);
+
+        // جلب العدادات المركبة لهذا الحساب الموحد بالتفصيل
+        $stmtMtr = $pdo->prepare("
+            SELECT m.mtr_serial, m.mtr_type, app.srv_id
+            FROM meter m
+            LEFT JOIN installation_task it ON m.task_id = it.task_id
+            LEFT JOIN application app ON it.app_id = app.app_id
+            WHERE m.acc_id = ?
+        ");
+        $stmtMtr->execute([$accId]);
+        $meters = $stmtMtr->fetchAll(PDO::FETCH_ASSOC);
+
+        $acc['services'] = $activeServices;
+        $acc['meters'] = $meters;
+
+        $myProperties[] = $acc;
+    }
 
     $notifStmt = $pdo->prepare("SELECT * FROM notification WHERE cust_id = ? ORDER BY created_at DESC LIMIT 30");
     $notifStmt->execute([$custId]);
@@ -412,7 +479,7 @@ function getStatusBadge($status) {
                     <div class="col-6">
                         <div class="bg-white bg-opacity-10 border rounded-3 p-3 text-center text-white">
                             <h2 class="fw-black m-0 text-warning"><?= count($myProperties); ?></h2>
-                            <small class="fw-bold">العدادات المفعلة</small>
+                            <small class="fw-bold">الحسابات المفعّلة</small>
                         </div>
                     </div>
                 </div>
@@ -539,12 +606,12 @@ function getStatusBadge($status) {
 
             <!-- التبويب 3: العدادات والحسابات المفعّلة -->
             <div id="tab-properties" class="tab-panel">
-                <div class="card-header-title"><i class="fa-solid fa-building-circle-check"></i> سجل الحسابات والعدادات المفعّلة</div>
+                <div class="card-header-title"><i class="fa-solid fa-building-circle-check"></i> سجل الحسابات والعدادات الذكية المفعّلة</div>
                 <?php if (empty($myProperties)): ?>
                     <div class="text-center py-5">
                         <i class="fa-solid fa-satellite-dish fs-1 text-muted mb-3 d-block"></i>
                         <h5 class="fw-bold">لا توجد خدمات نشطة أو عدادات مركبة حتى الآن.</h5>
-                        <p class="text-muted small">بمجرد سداد الفاتورة وإتمام فني التركيبات لعملية التركيب، ستظهر حساباتك وعداداتك هنا آلياً.</p>
+                        <p class="text-muted small">بمجرد سداد الفاتورة وإتمام فني التركيبات لعملية التركيب، ستظهر عقاراتك وعداداتك هنا آلياً.</p>
                     </div>
                 <?php else: ?>
                     <div class="row g-3">
@@ -556,29 +623,57 @@ function getStatusBadge($status) {
                                         <span class="badge bg-success"><i class="fa-solid fa-check"></i> نشط</span>
                                     </div>
                                     <div class="small text-muted mb-3">تاريخ تفعيل الحساب: <?= $prop['creation_date']; ?></div>
-                                    <div class="border-top pt-3">
+                                    <div class="border-top pt-3 mb-3">
                                         <p class="mb-2"><strong>رقم الصك الموثق:</strong> <span class="font-monospace text-muted"><?= htmlspecialchars($prop['deed_no']); ?></span></p>
                                         <p class="mb-2"><strong>المساحة الإجمالية:</strong> <span class="fw-bold text-dark"><?= htmlspecialchars($prop['land_area']); ?> م²</span></p>
-                                        <p class="mb-2"><strong>المالك المسجل:</strong> <span class="fw-bold text-dark"><?= htmlspecialchars($prop['owner_name']); ?></span></p>
-                                        <p class="mb-2"><strong>نوع الخدمة:</strong> <span class="badge bg-light text-primary border"><?= htmlspecialchars(cleanServiceName($prop['active_service'] ?? 'غير نشطة')); ?></span></p>
+                                        <p class="mb-2"><strong>المالك المسجل لوزارة العدل:</strong> <span class="fw-bold text-dark"><?= htmlspecialchars($prop['owner_name']); ?></span></p>
                                     </div>
-                                    <?php if($prop['mtr_serial']): ?>
-                                        <div class="bg-light rounded p-3 mt-3 border">
-                                            <div class="fw-bold text-secondary mb-2"><i class="fa-solid fa-microchip text-success"></i> بيانات العداد الذكي الميداني:</div>
-                                            <div class="row text-center">
-                                                <div class="col-6 border-end">
-                                                    <div class="small text-muted">الرقم التسلسلي</div>
-                                                    <div class="fw-bold font-monospace text-dark"><?= htmlspecialchars($prop['mtr_serial']); ?></div>
+
+                                    <div class="border-top pt-3">
+                                        <h6 class="fw-bold text-secondary mb-3"><i class="fa-solid fa-droplet text-primary"></i> الخدمات المفعلة والعدادات المرتبطة:</h6>
+                                        <?php if (!empty($prop['services'])): ?>
+                                            <?php foreach ($prop['services'] as $service): 
+                                                $srvClean = cleanServiceName($service['srv_name']);
+                                                // البحث عن عداد مرتبط بهذه الخدمة المحددة
+                                                $linkedMeter = null;
+                                                foreach ($prop['meters'] as $meter) {
+                                                    if ($meter['srv_id'] == $service['srv_id']) {
+                                                        $linkedMeter = $meter;
+                                                        break;
+                                                    }
+                                                }
+                                            ?>
+                                                <div class="p-3 bg-light rounded-3 border mb-2">
+                                                    <div class="d-flex justify-content-between align-items-center mb-2">
+                                                        <span class="badge bg-primary px-3 py-2 fw-bold"><i class="fa-solid fa-circle-nodes"></i> الخدمة: <?= htmlspecialchars($srvClean); ?></span>
+                                                        <?php if ($linkedMeter): ?>
+                                                            <span class="badge bg-success"><i class="fa-solid fa-circle-check"></i> تم التركيب</span>
+                                                        <?php else: ?>
+                                                            <span class="badge bg-warning text-dark"><i class="fa-solid fa-spinner fa-spin"></i> قيد الجدولة</span>
+                                                        <?php endif; ?>
+                                                    </div>
+                                                    
+                                                    <?php if ($linkedMeter): ?>
+                                                        <div class="row text-center mt-2 pt-2 border-top">
+                                                            <div class="col-6 border-end">
+                                                                <div class="small text-muted">الرقم التسلسلي للعداد</div>
+                                                                <div class="fw-bold font-monospace text-dark" style="font-size: 0.95rem;"><?= htmlspecialchars($linkedMeter['mtr_serial']); ?></div>
+                                                            </div>
+                                                            <div class="col-6">
+                                                                <div class="small text-muted">موديل العداد</div>
+                                                                <div class="fw-bold text-dark" style="font-size: 0.95rem;"><?= htmlspecialchars($linkedMeter['mtr_type']); ?></div>
+                                                            </div>
+                                                        </div>
+                                                    <?php else: ?>
+                                                        <div class="small text-muted text-center pt-1"><i class="fa-solid fa-helmet-safety text-warning"></i> جاري إسناد فني التركيبات لربط العداد وتفعيل الخدمة ميدانياً.</div>
+                                                    <?php endif; ?>
                                                 </div>
-                                                <div class="col-6">
-                                                    <div class="small text-muted">موديل العداد</div>
-                                                    <div class="fw-bold text-dark"><?= htmlspecialchars($prop['mtr_type']); ?></div>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    <?php else: ?>
-                                        <div class="alert alert-warning text-center fw-bold mt-3 mb-0"><i class="fa-solid fa-spinner fa-spin"></i> جاري جدولة الفني لتركيب العداد وربط البيانات</div>
-                                    <?php endif; ?>
+                                            <?php endforeach; ?>
+                                        <?php else: ?>
+                                            <div class="text-muted small">لا توجد خدمات نشطة مدرجة تحت هذا الحساب.</div>
+                                        <?php endif; ?>
+                                    </div>
+
                                 </div>
                             </div>
                         <?php endforeach; ?>
@@ -610,31 +705,32 @@ function getStatusBadge($status) {
         </div>
     </div>
 
-    <!-- Modal الملف الشخصي -->
-    <div class=\"modal fade\" id=\"profileModal\" tabindex=\"-1\">
-        <div class=\"modal-dialog modal-dialog-centered\">
-            <div class=\"modal-content\" style=\"border-radius: 24px; border: none; box-shadow: 0 25px 50px rgba(0,0,0,0.15);\">
-                <div class=\"modal-header border-0 pb-0\">
-                    <button type=\"button\" class=\"btn-close ms-auto mt-2 me-2\" data-bs-dismiss=\"modal\"></button>
+    <!-- نافذة الملف الشخصي (Profile Modal) -->
+    <div class="modal fade" id="profileModal" tabindex="-1">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content" style="border-radius: 24px; border: none; box-shadow: 0 25px 50px rgba(0,0,0,0.15);">
+                <div class="modal-header border-0 pb-0">
+                    <button type="button" class="btn-close ms-auto mt-2 me-2" data-bs-dismiss="modal"></button>
                 </div>
-                <div class=\"modal-body text-center px-4 pb-5 pt-0\">
-                    <div class=\"user-avatar mx-auto mb-3\" style=\"width: 90px; height: 90px; font-size: 3rem; background: linear-gradient(135deg, var(--nwc-navy), var(--nwc-blue)); color: white; border-radius: 50%; display: flex; align-items: center; justify-content: center; box-shadow: 0 10px 25px rgba(9,46,84,0.3);\">
-                        <i class=\"fa-solid fa-user-tie\"></i>
+                <div class="modal-body text-center px-4 pb-5 pt-0">
+                    <div class="user-avatar mx-auto mb-3" style="width: 90px; height: 90px; font-size: 3rem; background: linear-gradient(135deg, var(--nwc-navy), var(--nwc-blue)); color: white; border-radius: 50%; display: flex; align-items: center; justify-content: center; box-shadow: 0 10px 25px rgba(9,46,84,0.3);">
+                        <i class="fa-solid fa-user-tie"></i>
                     </div>
-                    <h3 class=\"fw-black text-dark mb-1\"><?= htmlspecialchars($customer['full_name']); ?></h3>
-                    <p class=\"text-muted fw-bold mb-4\"><i class=\"fa-solid fa-circle-check text-success ms-1\"></i> عميل موثّق لدى قطرة</p>
-                    <div class=\"bg-light p-3\" style=\"border-radius: 16px; border: 1px solid #e2e8f0; text-align: right;\">
-                        <div class=\"d-flex justify-content-between align-items-center mb-3 pb-3 border-bottom\">
-                            <span class=\"text-muted fw-bold\"><i class=\"fa-regular fa-id-card me-2\"></i> رقم الهوية</span>
-                            <span class=\"fw-black text-dark monospace\" style=\"font-size: 1.1rem;\"><?= htmlspecialchars($nationalId); ?></span>
+                    <h3 class="fw-black text-dark mb-1"><?= htmlspecialchars($customer['full_name']); ?></h3>
+                    <p class="text-muted fw-bold mb-4"><i class="fa-solid fa-circle-check text-success ms-1"></i> عميل موثّق لدى قطرة</p>
+                    
+                    <div class="bg-light p-3" style="border-radius: 16px; border: 1px solid #e2e8f0; text-align: right;">
+                        <div class="d-flex justify-content-between align-items-center mb-3 pb-3 border-bottom">
+                            <span class="text-muted fw-bold"><i class="fa-regular fa-id-card me-2"></i> رقم الهوية</span>
+                            <span class="fw-black text-dark monospace" style="font-size: 1.1rem;"><?= htmlspecialchars($nationalId); ?></span>
                         </div>
-                        <div class=\"d-flex justify-content-between align-items-center mb-3 pb-3 border-bottom\">
-                            <span class=\"text-muted fw-bold\"><i class=\"fa-solid fa-phone me-2\"></i> رقم الجوال</span>
-                            <span class=\"fw-black text-primary\" style=\"direction: ltr;\"><?= htmlspecialchars($customer['phone_number'] ?? 'غير مسجل'); ?></span>
+                        <div class="d-flex justify-content-between align-items-center mb-3 pb-3 border-bottom">
+                            <span class="text-muted fw-bold"><i class="fa-solid fa-phone me-2"></i> رقم الجوال</span>
+                            <span class="fw-black text-primary" style="direction: ltr;"><?= htmlspecialchars($customer['phone_number'] ?? 'غير مسجل'); ?></span>
                         </div>
-                        <div class=\"d-flex justify-content-between align-items-center\">
-                            <span class=\"text-muted fw-bold\"><i class=\"fa-solid fa-hashtag me-2\"></i> رقم المشترك الموحد</span>
-                            <span class=\"fw-bold badge bg-secondary\">CUST-<?= str_pad($custId, 4, '0', STR_PAD_LEFT); ?></span>
+                        <div class="d-flex justify-content-between align-items-center">
+                            <span class="text-muted fw-bold"><i class="fa-solid fa-hashtag me-2"></i> رقم المشترك الموحد</span>
+                            <span class="fw-bold badge bg-secondary">CUST-<?= str_pad($custId, 4, '0', STR_PAD_LEFT); ?></span>
                         </div>
                     </div>
                 </div>
@@ -644,6 +740,7 @@ function getStatusBadge($status) {
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
     <script>
+        // تفعيل الفقاعات المائية المتحركة
         const bgContainer = document.getElementById('bg-particles');
         for (let i = 0; i < 20; i++) {
             let drop = document.createElement('div');

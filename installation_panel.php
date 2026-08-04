@@ -42,8 +42,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['complete_task'])) {
 
             // 2. التحقق من وجود الحساب الموحد للعميل، وإنشائه إن لم يكن موجوداً (كإجراء أمني مرن)
             $stmtCheckAcc = $pdo->prepare("
-                SELECT acc_id FROM unified_account 
-                WHERE deed_no = (SELECT deed_no FROM application WHERE app_id = ?)
+                SELECT acc_id FROM unified_account \n                WHERE deed_no = (SELECT deed_no FROM application WHERE app_id = ?)
             ");
             $stmtCheckAcc->execute([$appId]);
             $accId = $stmtCheckAcc->fetchColumn();
@@ -103,8 +102,22 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['complete_task'])) {
             ");
             $stmtDecWorkload->execute([$empId]);
 
+            // 8. إرسال إشعار للمستفيد يفيد بانتهاء التركيب بنجاح
+            $stmtCust = $pdo->prepare("SELECT cust_id, srv_id FROM application WHERE app_id = ?");
+            $stmtCust->execute([$appId]);
+            $appRow = $stmtCust->fetch();
+            if ($appRow) {
+                $custIdForNotif = $appRow['cust_id'];
+                $srvIdForNotif = $appRow['srv_id'];
+                $srvNameClean = ($srvIdForNotif == 1) ? 'مياه' : (($srvIdForNotif == 2) ? 'صرف' : 'مياه وصرف');
+                
+                $notifMsg = "شريكنا العزيز، نود إعلامكم بأنه تم الانتهاء من تركيب عداد الخدمة (" . $srvNameClean . ") بنجاح وعقّاركم الآن متصل بالشبكة الذكية بالكامل. نحن سعيدون جداً بخدمتكم، وشكراً لتعاونكم مع شركة المياه الوطنية (قطرة)!";
+                $stmtInsertNotif = $pdo->prepare("INSERT INTO notification (message_content, cust_id) VALUES (?, ?)");
+                $stmtInsertNotif->execute([$notifMsg, $custIdForNotif]);
+            }
+
             $pdo->commit();
-            $msg = "تم تركيب العداد بنجاح، وتفعيل حساب المشترك، وإغلاق الطلب نهائياً!";
+            $msg = "تم تركيب العداد بنجاح، وتفعيل حساب المشترك، وإرسال الإشعار للعميل، وإغلاق الطلب نهائياً!";
             $msgType = "success";
         } catch (Exception $e) {
             $pdo->rollBack();
@@ -246,13 +259,13 @@ $completedTasks = $stmtCompletedTasks->fetchAll(PDO::FETCH_ASSOC);
                                 <div class="task-card <?= $index === 0 ? 'active-selection' : '' ?>" id="card-<?= $task['task_id'] ?>" onclick="selectTask(<?= htmlspecialchars(json_encode($task)) ?>, this)">
                                     <div class="d-flex justify-content-between align-items-start mb-2">
                                         <span class="badge bg-light text-dark border fw-black">طلب رقم #<?= str_pad($task['app_id'], 5, '0', STR_PAD_LEFT); ?></span>
-                                        <span class="badge bg-primary fw-bold"><i class="fa-solid fa-droplet me-1"></i> <?= htmlspecialchars($task['srv_name']) ?></span>
+                                        <span class="badge bg-primary fw-bold"><i class="fa-solid fa-droplet me-1\"></i> <?= htmlspecialchars($task['srv_name']) ?></span>
                                     </div>
                                     <h5 class="fw-black text-dark mb-1"><?= htmlspecialchars($task['customer_name']) ?></h5>
-                                    <p class="small text-muted fw-bold mb-2"><i class="fa-solid fa-location-dot text-danger"></i> العقار في: <?= htmlspecialchars($task['cty_name']) ?></p>
+                                    <p class="small text-muted fw-bold mb-2"><i class="fa-solid fa-location-dot text-danger\"></i> العقار في: <?= htmlspecialchars($task['cty_name']) ?></p>
                                     <div class="d-flex justify-content-between text-secondary small fw-bold">
                                         <span>رقم الصك: <?= htmlspecialchars($task['deed_no']) ?></span>
-                                        <span class="text-primary"><i class="fa-solid fa-phone"></i> <?= htmlspecialchars($task['phone_number']) ?></span>
+                                        <span class="text-primary"><i class="fa-solid fa-phone\"></i> <?= htmlspecialchars($task['phone_number']) ?></span>
                                     </div>
                                 </div>
                             <?php endforeach; ?>
@@ -264,7 +277,7 @@ $completedTasks = $stmtCompletedTasks->fetchAll(PDO::FETCH_ASSOC);
                                 <div class="card-title text-primary"><i class="fa-solid fa-location-crosshairs"></i> موقع العقار وتفاصيل الملاحة</div>
                                 <div class="map-box mb-3" id="taskMap"></div>
                                 <div class="d-flex gap-2 mb-4">
-                                    <a id="btnGoogleMap" href="#" target="_blank" class="btn btn-outline-danger w-100 fw-bold rounded-pill"><i class="fa-solid fa-map-location-dot me-2"></i> فتح اتجاهات الملاحة في خرائط جوجل</a>
+                                    <a id="btnGoogleMap" href="#" target="_blank" class="btn btn-outline-danger w-100 fw-bold rounded-pill"><i class="fa-solid fa-map-location-dot me-2\"></i> فتح اتجاهات המلاحة في خرائط جوجل</a>
                                 </div>
 
                                 <div class="card-title text-success"><i class="fa-solid fa-file-invoice"></i> إدخال البيانات الفنية للعداد والتركيب</div>
@@ -305,7 +318,7 @@ $completedTasks = $stmtCompletedTasks->fetchAll(PDO::FETCH_ASSOC);
                                     </div>
 
                                     <div class="mt-4">
-                                        <button type="submit" name="complete_task" class="btn-brand bg-success"><i class="fa-solid fa-circle-check me-2"></i> تأكيد التركيب وتفعيل الخدمة والعداد</button>
+                                        <button type="submit" name="complete_task" class="btn-brand bg-success"><i class="fa-solid fa-circle-check me-2\"></i> تأكيد التركيب وتفعيل الخدمة والعداد</button>
                                     </div>
                                 </form>
                             </div>
@@ -319,7 +332,7 @@ $completedTasks = $stmtCompletedTasks->fetchAll(PDO::FETCH_ASSOC);
                 <div class="admin-card">
                     <div class="card-title text-success"><i class="fa-solid fa-clock-rotate-left"></i> سجل العدادات التي تم تركيبها</div>
                     <?php if(empty($completedTasks)): ?>
-                        <div class="text-center py-5"><i class="fa-solid fa-folder-open text-muted fs-1 mb-3"></i><h5 class="fw-bold text-muted">لا توجد أي عدادات مسجلة باسمك بعد</h5></div>
+                        <div class="text-center py-5"><i class="fa-solid fa-folder-open text-muted fs-1 mb-3\"></i><h5 class="fw-bold text-muted\">لا توجد أي عدادات مسجلة باسمك بعد</h5></div>
                     <?php else: ?>
                         <div class="table-responsive">
                             <table class="table table-hover">
