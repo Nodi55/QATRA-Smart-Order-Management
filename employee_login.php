@@ -84,6 +84,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800;900&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
     <style>
         :root { --qatra-navy: #092e54; --qatra-blue: #0b457f; --qatra-light: #4492d4; --qatra-cyan: #7dd3fc; }
         body { font-family: 'Cairo', sans-serif; margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center; background-color: var(--qatra-navy); overflow: hidden; position: relative; }
@@ -106,6 +107,10 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
         
         .btn-brand { background: linear-gradient(135deg, var(--qatra-blue), var(--qatra-light)); color: white; border: none; border-radius: 14px; padding: 16px; font-weight: 900; font-size: 1.1rem; width: 100%; transition: 0.4s; }
         .btn-brand:hover { transform: translateY(-3px); box-shadow: 0 15px 35px rgba(11, 69, 127, 0.5); color: white; }
+
+        .forgot-link { text-align: left; margin-top: 6px; margin-bottom: 24px; }
+        .forgot-link a { color: #94a3b8; text-decoration: none; font-weight: 600; font-size: 0.82rem; transition: 0.3s; }
+        .forgot-link a:hover { color: var(--qatra-light); }
 
         /* --- زر العودة (تمت إضافته هنا) --- */
         .back-link {
@@ -163,15 +168,33 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
                     <span class="input-group-text"><i class="fa-regular fa-envelope"></i></span>
                 </div>
             </div>
-            <div class="mb-4">
+            <div class="mb-1">
                 <label class="fw-bold mb-2 text-dark">كلمة المرور</label>
                 <div class="input-group" style="direction: ltr;">
                     <input type="password" name="password" class="form-control text-end" placeholder="أدخل كلمة المرور" required>
                     <span class="input-group-text"><i class="fa-solid fa-lock"></i></span>
                 </div>
             </div>
+            <div class="forgot-link">
+                <a href="employee_forgot_password.php"><i class="fa-solid fa-circle-question me-1" style="font-size:0.75rem;"></i> نسيت كلمة المرور؟</a>
+            </div>
             <button type="submit" class="btn-brand">متابعة <i class="fa-solid fa-arrow-left ms-2"></i></button>
         </form>
     </div>
+
+    <!-- رسالة النجاح عند إعادة تعيين كلمة المرور بنجاح -->
+    <?php if(isset($_GET['reset']) && $_GET['reset'] == 'success'): ?>
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            Swal.fire({
+                icon: 'success',
+                title: 'تم التحديث بنجاح!',
+                text: 'تم تغيير كلمة المرور بنجاح، يمكنك الآن تسجيل الدخول بكلمة المرور الجديدة.',
+                confirmButtonColor: '#0b457f',
+                backdrop: `rgba(9,46,84,0.6)`
+            });
+        });
+    </script>
+    <?php endif; ?>
 </body>
 </html>
