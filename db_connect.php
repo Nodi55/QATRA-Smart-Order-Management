@@ -21,11 +21,11 @@ if ($envHost && $envDb && $envUser) {
     $pass = $envPass;
     $port = $envPort;
 } else {
-    // -- وضع التطوير المحلي (XAMPP) --
-    $host = '127.0.0.1';
-    $db   = 'qatra_system';
-    $user = 'root';
-    $pass = '';
+    // -- بيانات اتصال Clever Cloud (تُستخدم كاحتياط عند عدم توفر متغيرات البيئة) --
+    $host = 'bsfbmb13afxzn35nolyb-mysql.services.clever-cloud.com';
+    $db   = 'bsfbmb13afxzn35nolyb';
+    $user = 'ubracuf3anbungl9';
+    $pass = 'YEcp35Qxa68MIhQbUMDN';
     $port = '3306';
 }
 
