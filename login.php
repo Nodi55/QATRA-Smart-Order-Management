@@ -178,9 +178,9 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
         }
         .btn-brand:hover { transform: translateY(-3px); box-shadow: 0 15px 35px rgba(11, 69, 127, 0.5); color: white; }
 
-        .forgot-link { text-align: left; margin-top: -14px; margin-bottom: 20px; }
-        .forgot-link a { color: var(--qatra-light); text-decoration: none; font-weight: 700; font-size: 0.88rem; }
-        .forgot-link a:hover { color: var(--qatra-blue); text-decoration: underline; }
+        .forgot-link { text-align: left; margin-top: 6px; margin-bottom: 24px; }
+        .forgot-link a { color: #94a3b8; text-decoration: none; font-weight: 600; font-size: 0.82rem; transition: 0.3s; }
+        .forgot-link a:hover { color: var(--qatra-light); }
 
         .footer-links { text-align: center; margin-top: 30px; font-weight: 700; color: #64748b; }
         .footer-links a { color: var(--qatra-light); text-decoration: none; transition: 0.3s; }
@@ -284,7 +284,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
             </div>
         </div>
 
-        <div class="mb-2">
+        <div class="mb-1">
             <label class="form-label">كلمة المرور</label>
             <div class="input-group" style="direction: ltr;">
                 <input type="password" name="password" class="form-control text-end" placeholder="أدخل كلمة المرور" required>
@@ -293,7 +293,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
         </div>
 
         <div class="forgot-link">
-            <a href="forgot_password.php">نسيت كلمة المرور؟</a>
+            <a href="forgot_password.php"><i class="fa-solid fa-circle-question me-1" style="font-size:0.75rem;"></i> نسيت كلمة المرور؟</a>
         </div>
 
         <button type="submit" class="btn-brand">دخول المنصة <i class="fa-solid fa-arrow-left ms-2"></i></button>
