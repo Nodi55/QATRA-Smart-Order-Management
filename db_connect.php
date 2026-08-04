@@ -22,11 +22,11 @@ if ($envHost && $envDb && $envUser) {
     $port = $envPort;
 } else {
     // -- بيانات اتصال Clever Cloud (تُستخدم كاحتياط عند عدم توفر متغيرات البيئة) --
-    $host = 'bsfbmb13afxzn35nolyb-mysql.services.clever-cloud.com';
-    $db   = 'bsfbmb13afxzn35nolyb';
+    $host = 'brxozfjxd7jyoui9ni0a-mysql.services.clever-cloud.com';
+    $db   = 'brxozfjxd7jyoui9ni0a';
     $user = 'ubracuf3anbungl9';
     $pass = 'YEcp35Qxa68MIhQbUMDN';
-    $port = '3306';
+    $port = '21663';
 }
 
 // خيارات الاتصال لضمان الأمان واسترجاع البيانات بشكل صحيح (ولدعم اللغة العربية)
