@@ -16,53 +16,7 @@ if (isset($_SESSION['emp_id'])) {
 
 require_once 'db_connect.php';
 $errorMsg = "";
-if ($employee) {
-    // 1. الاقتصار على المقارنة الآمنة والمشفرة لكلمات المرور لمنع استغلال الحسابات
-    if (password_verify($password, $employee['password_hash'])) {
-        $rolesArray = [];
-        try {
-            $roleStmt = $pdo->prepare("SELECT sr.role_name FROM employee_roles er JOIN system_role sr ON er.role_id = sr.role_id WHERE er.emp_id = ?");
-            $roleStmt->execute([$employee['emp_id']]);
-            $rolesArray = $roleStmt->fetchAll(PDO::FETCH_COLUMN);
-        } catch (PDOException $e) {}
 
-        if (empty($rolesArray)) {
-            $errorMsg = "حسابك موجود ولكن لا تمتلك أي صلاحيات لدخول النظام.";
-        } else {
-            $otpCode = rand(100000, 999999);
-            
-            // تهيئة حقول الـ OTP تلقائياً في حال النقص
-            try {
-                $pdo->query("SELECT emp_id FROM otp_code LIMIT 1");
-            } catch (Exception $e) {
-                $pdo->exec("ALTER TABLE otp_code ADD COLUMN emp_id INT NULL, ADD CONSTRAINT fk_otp_emp FOREIGN KEY (emp_id) REFERENCES company_employee(emp_id) ON DELETE CASCADE");
-            }
-            try {
-                $pdo->query("SELECT purpose FROM otp_code LIMIT 1");
-            } catch (Exception $e) {
-                $pdo->exec("ALTER TABLE otp_code ADD COLUMN purpose VARCHAR(20) NOT NULL DEFAULT 'login'");
-            }
-
-            // 2. ربط الرمز بالغرض الخاص به (login) بشكل صارم
-            $stmtOtp = $pdo->prepare("INSERT INTO otp_code (code, expiry_time, is_used, emp_id, purpose) VALUES (?, DATE_ADD(NOW(), INTERVAL 2 MINUTE), 0, ?, 'login')");
-            $stmtOtp->execute([$otpCode, $employee['emp_id']]);
-
-            $_SESSION['temp_emp_otp'] = $otpCode; 
-            $_SESSION['temp_emp_id'] = $employee['emp_id'];
-            $_SESSION['temp_emp_name'] = $employee['emp_name'];
-            $_SESSION['temp_emp_email'] = $employee['emp_email'];
-            $_SESSION['temp_emp_city_id'] = $employee['cty_id'];
-            $_SESSION['temp_active_tasks'] = $employee['active_tasks_count'];
-            $_SESSION['temp_emp_roles'] = $rolesArray;
-            header("Location: employee_verify_otp.php");
-            exit;
-        }
-    } else {
-        $errorMsg = "كلمة المرور غير صحيحة.";
-    }
-} else {
-    $errorMsg = "البريد الإلكتروني غير مسجل في منظومة الموظفين.";
-}
 
 if ($_SERVER["REQUEST_METHOD"] == "POST") {
     $email = trim($_POST['emp_email']);
