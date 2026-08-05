@@ -488,11 +488,12 @@ $completedTasks = $stmtHistory->fetchAll(PDO::FETCH_ASSOC);
                                         <th>معايير الجاهزية الميدانية المسجلة</th>
                                         <th>إثبات الفحص</th>
                                         <th>القرار الفني النهائي</th>
+                                        <th>التقرير</th>
                                     </tr>
                                 </thead>
                                 <tbody>
                                     <?php if(empty($completedTasks)): ?>
-                                        <tr><td colspan="6" class="text-center py-5 text-muted fw-bold">لم تقم بإتمام أي فحص ميداني بعد.</td></tr>
+                                        <tr><td colspan="7" class="text-center py-5 text-muted fw-bold">لم تقم بإتمام أي فحص ميداني بعد.</td></tr>
                                     <?php else: ?>
                                         <?php foreach($completedTasks as $history): ?>
                                             <tr>
@@ -516,6 +517,11 @@ $completedTasks = $stmtHistory->fetchAll(PDO::FETCH_ASSOC);
                                                         '<span class="badge bg-success rounded-pill px-3 py-2"><i class="fa-solid fa-circle-check"></i> جاهز ومطابق</span>' : 
                                                         '<span class="badge bg-danger rounded-pill px-3 py-2"><i class="fa-solid fa-circle-xmark"></i> غير مطابق ومرفوض</span>' 
                                                     ?>
+                                                </td>
+                                                <td>
+                                                    <a href="inspection_report.php?insp_id=<?= $history['insp_id']; ?>" target="_blank" class="btn btn-sm btn-outline-primary rounded-pill fw-bold">
+                                                        <i class="fa-solid fa-file-lines me-1"></i> عرض التقرير
+                                                    </a>
                                                 </td>
                                             </tr>
                                         <?php endforeach; ?>
