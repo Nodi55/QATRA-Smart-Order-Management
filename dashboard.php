@@ -296,7 +296,7 @@ try {
         SELECT c.cty_id, c.cty_name, r.reg_name 
         FROM city c 
         JOIN region r ON c.reg_id = r.reg_id 
-        WHERE c.cty_name NOT IN ('عيون الجواء', 'ضرية', 'الشماسية', 'بقعاء', 'الشنان', 'الحائط') 
+        WHERE c.cty_name NOT IN ('عيون الجواء', 'ضرية', 'بقعاء', 'الشنان', 'الحائط', 'مدينة الرياض') 
         ORDER BY r.reg_id, c.cty_name
     ")->fetchAll(PDO::FETCH_ASSOC);
 
