@@ -121,6 +121,9 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['submit_new_app'])) {
                 $srvNameClean = ($singleSrvId == 1) ? 'مياه' : 'صرف';
                 $appDetailLine = "طلب {$srvNameClean} رقم (#" . str_pad($newAppId, 5, '0', STR_PAD_LEFT) . ")";
 
+                // إدراج أول سجل في تاريخ الطلب لدعم التتبع الحي لدورة الحياة
+                $pdo->prepare("INSERT INTO application_history (app_id, status, change_date) VALUES (?, ?, NOW())")->execute([$newAppId, $appStatus]);
+
                 // التوزيع الجغرافي الذكي لفنيي الفحص لكل طلب على حدة لتقليل العبء
                 if ($appStatus == 'Pending_Inspection') {
                     $bestTechStmt = $pdo->prepare("
@@ -432,15 +435,45 @@ function getAppStageIndex($status) {
         .user-avatar { width: 38px; height: 38px; background: var(--nwc-light); color: #0b457f; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 1.2rem; }
         .btn-logout { transition: all 0.3s; width: 42px; height: 42px; display: flex; align-items: center; justify-content: center; }
         .btn-logout:hover { background-color: #ef4444 !important; color: white !important; transform: rotate(90deg); }
+
+        .notif-bell-wrap { position: relative; }
+        .notif-bell-badge { position: absolute; top: -6px; left: -6px; background: #ef4444; color: white; font-size: 0.68rem; font-weight: 800; min-width: 20px; height: 20px; border-radius: 50%; display: flex; align-items: center; justify-content: center; padding: 0 4px; box-shadow: 0 0 0 3px white; animation: bellPop 0.4s ease; }
+        @keyframes bellPop { from { transform: scale(0); } to { transform: scale(1); } }
+        .btn-bell.ringing { animation: bellRing 0.6s ease-in-out 2; }
+        @keyframes bellRing { 0%,100% { transform: rotate(0); } 20% { transform: rotate(15deg); } 40% { transform: rotate(-15deg); } 60% { transform: rotate(8deg); } 80% { transform: rotate(-8deg); } }
         
         .premium-card { background: rgba(255, 255, 255, 0.97); backdrop-filter: blur(20px); border-radius: 24px; padding: 40px; box-shadow: var(--card-shadow); border: 1px solid rgba(255,255,255,0.2); position: relative; }
         .premium-card::before { content: ''; position: absolute; top: 0; left: 10%; width: 80%; height: 4px; background: linear-gradient(90deg, transparent, var(--nwc-blue), transparent); border-radius: 0 0 10px 10px; }
         
         .card-header-title { color: var(--nwc-navy); font-weight: 900; font-size: 1.4rem; margin-bottom: 30px; display: flex; align-items: center; gap: 12px; border-bottom: 2px solid var(--nwc-light); padding-bottom: 15px; }
         .card-header-title i { background: var(--nwc-light); color: var(--nwc-blue); width: 45px; height: 45px; display: flex; align-items: center; justify-content: center; border-radius: 12px; font-size: 1.2rem; }
+
+        /* ============== شريط التتبع الحي (Live Tracker) ============== */
+        .live-tracker-card { background: rgba(255,255,255,0.97); backdrop-filter: blur(20px); border-radius: 24px; padding: 28px 32px; box-shadow: var(--card-shadow); border: 1px solid rgba(255,255,255,0.2); position: relative; overflow: hidden; margin-bottom: 20px; }
+        .live-tracker-card::before { content: ''; position: absolute; top: 0; left: 10%; width: 80%; height: 4px; background: linear-gradient(90deg, transparent, #10b981, transparent); }
+        .live-pulse-dot { width: 10px; height: 10px; border-radius: 50%; background: #10b981; display: inline-block; position: relative; }
+        .live-pulse-dot::after { content: ''; position: absolute; inset: 0; border-radius: 50%; background: #10b981; animation: pulseRing 1.6s infinite; }
+        @keyframes pulseRing { 0% { transform: scale(1); opacity: 0.7; } 100% { transform: scale(3.2); opacity: 0; } }
+        .lt-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 22px; flex-wrap: wrap; gap: 10px; }
+        .lt-title { font-weight: 900; color: var(--nwc-navy); display: flex; align-items: center; gap: 10px; font-size: 1.15rem; }
+        .lt-badge-live { background: #ecfdf5; color: #059669; border: 1px solid #a7f3d0; font-weight: 800; padding: 5px 14px; border-radius: 50px; font-size: 0.8rem; display: flex; align-items: center; gap: 8px; }
+        .lt-progress-wrap { position: relative; padding: 0 10px; }
+        .lt-progress-track { position: relative; height: 6px; background: #e2e8f0; border-radius: 10px; margin: 0 5px; }
+        .lt-progress-fill { position: absolute; top: 0; right: 0; height: 100%; border-radius: 10px; background: linear-gradient(90deg, var(--nwc-blue), #10b981); transition: width 1s cubic-bezier(0.4,0,0.2,1); }
+        .lt-progress-fill::after { content: ''; position: absolute; left: -8px; top: 50%; transform: translateY(-50%); width: 18px; height: 18px; border-radius: 50%; background: #10b981; box-shadow: 0 0 0 5px rgba(16,185,129,0.2), 0 4px 10px rgba(0,0,0,0.2); animation: dropBounce 1.4s ease-in-out infinite; }
+        @keyframes dropBounce { 0%,100% { transform: translateY(-50%) scale(1); } 50% { transform: translateY(-65%) scale(1.15); } }
+        .lt-steps { display: flex; justify-content: space-between; margin-top: 14px; }
+        .lt-step { text-align: center; flex: 1; }
+        .lt-step-icon { width: 38px; height: 38px; border-radius: 50%; background: #f1f5f9; color: #94a3b8; display: flex; align-items: center; justify-content: center; margin: 0 auto 8px; font-size: 0.95rem; border: 2px solid #e2e8f0; transition: all 0.4s; }
+        .lt-step.done .lt-step-icon { background: #10b981; color: white; border-color: #10b981; }
+        .lt-step.current .lt-step-icon { background: var(--nwc-blue); color: white; border-color: var(--nwc-blue); box-shadow: 0 0 0 6px rgba(68,146,212,0.18); animation: currentGlow 1.5s infinite; }
+        @keyframes currentGlow { 0%,100% { box-shadow: 0 0 0 6px rgba(68,146,212,0.18); } 50% { box-shadow: 0 0 0 10px rgba(68,146,212,0.05); } }
+        .lt-step-label { font-size: 0.75rem; font-weight: 800; color: #94a3b8; }
+        .lt-step.done .lt-step-label, .lt-step.current .lt-step-label { color: var(--nwc-navy); }
+        .lt-msg { text-align: center; margin-top: 18px; font-weight: 800; color: var(--nwc-blue); background: var(--nwc-light); border-radius: 14px; padding: 12px; }
         
         .custom-tabs { display: flex; gap: 15px; border-bottom: 2px solid rgba(255, 255, 255, 0.1); padding-bottom: 10px; margin-bottom: 30px; overflow-x: auto; }
-        .tab-btn { background: rgba(255, 255, 255, 0.05); color: #cbd5e1; border: 1px solid rgba(255, 255, 255, 0.1); padding: 12px 25px; border-radius: 50px; font-weight: 700; transition: 0.3s; white-space: nowrap; }
+        .tab-btn { background: rgba(255, 255, 255, 0.05); color: #cbd5e1; border: 1px solid rgba(255, 255, 255, 0.1); padding: 12px 25px; border-radius: 50px; font-weight: 700; transition: 0.3s; white-space: nowrap; position: relative; }
         .tab-btn:hover, .tab-btn.active { background: white; color: var(--nwc-navy); border-color: white; transform: translateY(-2px); }
         
         .tab-panel { display: none; }
@@ -458,7 +491,9 @@ function getAppStageIndex($status) {
         .table-custom th { color: var(--nwc-navy); font-weight: 800; padding: 18px 15px; border-bottom: 2px solid var(--nwc-light); }
         .table-custom td { padding: 20px 15px; border-bottom: 1px solid #f1f5f9; vertical-align: middle; font-weight: 700; color: #1e293b; }
         
-        .status-badge { padding: 8px 15px; border-radius: 12px; font-weight: 800; display: inline-flex; align-items: center; gap: 6px; font-size: 0.85rem; }
+        .status-badge { padding: 8px 15px; border-radius: 12px; font-weight: 800; display: inline-flex; align-items: center; gap: 6px; font-size: 0.85rem; transition: all 0.4s; }
+        .status-badge.just-updated { animation: statusFlash 1.4s ease; }
+        @keyframes statusFlash { 0% { box-shadow: 0 0 0 0 rgba(16,185,129,0.6); } 70% { box-shadow: 0 0 0 12px rgba(16,185,129,0); } 100% { box-shadow: 0 0 0 0 rgba(16,185,129,0); } }
         .badge-warning { background: #fffbeb; color: #d97706; border: 1px solid #fde68a; }
         .badge-info { background: var(--nwc-light); color: var(--nwc-blue); border: 1px solid #bae6fd; }
         .badge-primary { background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; }
@@ -470,6 +505,8 @@ function getAppStageIndex($status) {
         .property-box:hover { transform: translateY(-4px); box-shadow: 0 10px 25px rgba(0,0,0,0.05); }
 
         .notif-box { background: #f8fafc; border-right: 4px solid var(--nwc-blue); border-radius: 12px; padding: 20px; margin-bottom: 15px; font-weight: 700; }
+        .notif-box.notif-new { animation: notifSlideIn 0.6s cubic-bezier(0.2,0.8,0.2,1); border-right-color: #10b981; background: #f0fdf9; }
+        @keyframes notifSlideIn { from { opacity: 0; transform: translateY(-15px); } to { opacity: 1; transform: translateY(0); } }
 
         .stage-timeline { list-style: none; padding: 0; margin: 0; }
         .stage-item { position: relative; padding-right: 50px; padding-bottom: 30px; }
@@ -518,6 +555,12 @@ function getAppStageIndex($status) {
                 </div>
             </a>
             <div class="d-flex align-items-center gap-3">
+                <div class="notif-bell-wrap">
+                    <button class="btn btn-light rounded-circle shadow-sm border btn-bell" id="bellBtn" style="width:42px;height:42px;" onclick="switchTab('tab-notifs', document.querySelectorAll('.tab-btn')[3])" title="الإشعارات">
+                        <i class="fa-solid fa-bell text-secondary"></i>
+                    </button>
+                    <span class="notif-bell-badge d-none" id="bellBadge">0</span>
+                </div>
                 <div class="user-profile-badge" data-bs-toggle="modal" data-bs-target="#profileModal" title="عرض ملفي">
                     <span class="ms-2"><?= htmlspecialchars($customer['full_name']); ?></span>
                     <div class="user-avatar"><i class="fa-solid fa-user-tie"></i></div>
@@ -549,6 +592,19 @@ function getAppStageIndex($status) {
                     </div>
                 </div>
             </div>
+        </div>
+
+        <!-- ============== شريط التتبع الحي لأقرب طلب نشط (Live Tracker) ============== -->
+        <div class="live-tracker-card fade-in-up delay-2 d-none" id="liveTrackerCard">
+            <div class="lt-header">
+                <div class="lt-title"><i class="fa-solid fa-satellite-dish text-primary"></i> متابعة طلبك المباشرة <span id="lt-app-id" class="text-muted fw-bold"></span></div>
+                <div class="lt-badge-live"><span class="live-pulse-dot"></span> تحديث حي</div>
+            </div>
+            <div class="lt-progress-wrap">
+                <div class="lt-progress-track"><div class="lt-progress-fill" id="ltProgressFill" style="width:10%"></div></div>
+                <div class="lt-steps" id="ltSteps"></div>
+            </div>
+            <div class="lt-msg" id="ltMsg"><i class="fa-solid fa-circle-notch fa-spin"></i> جاري تحميل حالة طلبك...</div>
         </div>
 
         <div class="custom-tabs fade-in-up delay-2">
@@ -632,7 +688,7 @@ function getAppStageIndex($status) {
                     </div>
                 <?php else: ?>
                     <div class="table-responsive">
-                        <table class="table table-custom">
+                        <table class="table table-custom" id="appsTable">
                             <thead>
                                 <tr>
                                     <th>رقم الطلب</th>
@@ -644,18 +700,19 @@ function getAppStageIndex($status) {
                             </thead>
                             <tbody>
                                 <?php foreach ($myApplications as $app): ?>
-                                    <tr>
+                                    <tr data-app-id="<?= (int)$app['app_id']; ?>">
                                         <td><span class="badge bg-light text-secondary border">#<?= str_pad($app['app_id'], 5, '0', STR_PAD_LEFT); ?></span></td>
                                         <td><div class="fw-bold"><?= htmlspecialchars(cleanServiceName($app['srv_name'])); ?></div><div class="small text-muted"><i class="fa-solid fa-location-dot text-danger"></i> <?= htmlspecialchars(str_replace('مدينة ', '', $app['cty_name'])); ?></div></td>
                                         <td class="font-monospace text-muted"><?= htmlspecialchars($app['deed_no']); ?></td>
                                         <td>
-                                            <?= getStatusBadge($app['app_status']); ?>
-                                            <button type="button" class="btn btn-sm btn-outline-primary rounded-circle mt-1" title="عرض مراحل الطلب"
+                                            <span class="status-cell"><?= getStatusBadge($app['app_status']); ?></span>
+                                            <button type="button" class="btn btn-sm btn-outline-primary rounded-circle mt-1 stage-btn" title="عرض مراحل الطلب"
+                                                data-app-id="<?= (int)$app['app_id']; ?>" data-service="<?= htmlspecialchars(cleanServiceName($app['srv_name']), ENT_QUOTES); ?>"
                                                 onclick="openStagesModal(<?= (int)$app['app_id']; ?>, <?= getAppStageIndex($app['app_status']); ?>, '<?= htmlspecialchars(cleanServiceName($app['srv_name']), ENT_QUOTES); ?>')">
                                                 <i class="fa-solid fa-timeline"></i>
                                             </button>
                                         </td>
-                                        <td>
+                                        <td class="payment-cell">
                                             <?php if ($app['payment_status'] == 'Unpaid'): ?>
                                                 <div class="d-flex align-items-center gap-2">
                                                     <span class="badge bg-danger rounded-pill px-3 py-2 fw-bold">غير مدفوعة: <?= number_format($app['amount']); ?> ر.س</span>
@@ -739,14 +796,15 @@ function getAppStageIndex($status) {
             <!-- التبويب 4: مركز الإشعارات -->
             <div id="tab-notifs" class="tab-panel">
                 <div class="card-header-title"><i class="fa-solid fa-bell"></i> مركز الإشعارات الأمنية والتشغيلية</div>
+                <div id="notifsList">
                 <?php if (empty($myNotifications)): ?>
-                    <div class="text-center py-5">
+                    <div class="text-center py-5" id="notifsEmptyState">
                         <i class="fa-regular fa-bell-slash fs-1 text-muted mb-3 d-block"></i>
                         <h5 class="fw-bold">صندوق الإشعارات فارغ تماماً حالياً</h5>
                     </div>
                 <?php else: ?>
                     <?php foreach ($myNotifications as $notif): ?>
-                        <div class="notif-box d-flex justify-content-between align-items-center">
+                        <div class="notif-box d-flex justify-content-between align-items-center" data-notif-id="<?= (int)$notif['notif_id']; ?>">
                             <div>
                                 <div class="text-dark fw-bold mb-1"><?= htmlspecialchars($notif['message_content']); ?></div>
                                 <div class="small text-muted"><i class="fa-regular fa-clock"></i> <?= $notif['created_at']; ?></div>
@@ -755,6 +813,7 @@ function getAppStageIndex($status) {
                         </div>
                     <?php endforeach; ?>
                 <?php endif; ?>
+                </div>
             </div>
 
         </div>
@@ -926,13 +985,18 @@ function getAppStageIndex($status) {
             document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
             document.getElementById(panelId).classList.add('active');
             btnElement.classList.add('active');
+            if (panelId === 'tab-notifs') {
+                document.getElementById('bellBadge').classList.add('d-none');
+                unreadNotifCount = 0;
+                lastSeenNotifId = lastKnownMaxNotifId;
+            }
         }
 
         let map = L.map('propertyMap').setView([24.7136, 46.6753], 5);
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© Qatra Smart Systems' }).addTo(map);
         let marker;
         const cityCoords = {
-            'الشماسية': [24.7136, 46.6753],
+            'الرياض': [24.7136, 46.6753],
             'بريدة': [26.3260, 43.9390],
             'عنيزة': [26.0855, 43.9781],
             'الرس': [25.8679, 43.4975],
@@ -1045,12 +1109,22 @@ function getAppStageIndex($status) {
 
         // ============== نافذة مراحل حياة الطلب ==============
         const stageDefs = [
-            { title: 'تقديم الطلب ومطابقة الصك', desc: 'تم إرسال الطلب ومطابقته آلياً عبر محرك (DSS) مع وزارة العدل.', icon: 'fa-file-signature' },
-            { title: 'الفحص الميداني', desc: 'زيارة فني الفحص للموقع والتحقق من جاهزية العقار.', icon: 'fa-helmet-safety' },
-            { title: 'إصدار وسداد الفاتورة', desc: 'إصدار فاتورة الربط وسدادها إلكترونياً.', icon: 'fa-file-invoice-dollar' },
-            { title: 'التركيب الميداني', desc: 'تركيب وتفعيل العداد الذكي وربط الحساب الموحد.', icon: 'fa-person-digging' },
-            { title: 'الاكتمال والتفعيل', desc: 'اكتمال جميع الإجراءات وتفعيل الخدمة بالكامل.', icon: 'fa-circle-check' }
+            { title: 'تقديم الطلب ومطابقة الصك', desc: 'تم إرسال الطلب ومطابقته آلياً عبر محرك (DSS) مع وزارة العدل.', icon: 'fa-file-signature', short: 'تقديم الطلب' },
+            { title: 'الفحص الميداني', desc: 'زيارة فني الفحص للموقع والتحقق من جاهزية العقار.', icon: 'fa-helmet-safety', short: 'الفحص الميداني' },
+            { title: 'إصدار وسداد الفاتورة', desc: 'إصدار فاتورة الربط وسدادها إلكترونياً.', icon: 'fa-file-invoice-dollar', short: 'الفاتورة' },
+            { title: 'التركيب الميداني', desc: 'تركيب وتفعيل العداد الذكي وربط الحساب الموحد.', icon: 'fa-person-digging', short: 'التركيب' },
+            { title: 'الاكتمال والتفعيل', desc: 'اكتمال جميع الإجراءات وتفعيل الخدمة بالكامل.', icon: 'fa-circle-check', short: 'التفعيل' }
         ];
+
+        // رسائل حية بأسلوب تتبع طلبات المطاعم لكل حالة
+        const liveStageMessages = {
+            'Pending_Review':     { text: 'طلبك قيد المراجعة اليدوية من قبل فريقنا للتحقق من بيانات المالك', icon: 'fa-file-signature' },
+            'Pending_Inspection': { text: 'جاري تجهيز الفحص الميداني... فني الفحص في طريقه لجدولة الزيارة', icon: 'fa-helmet-safety' },
+            'Pending_Billing':    { text: 'اكتمل الفحص الميداني بنجاح! فاتورتك جاهزة الآن للسداد', icon: 'fa-file-invoice-dollar' },
+            'In_Progress':        { text: 'جاري الآن تركيب وتفعيل عدادك في الموقع', icon: 'fa-person-digging' },
+            'Completed':          { text: 'تم تفعيل خدمتك بالكامل وربط عدادك بنجاح 🎉', icon: 'fa-circle-check' },
+            'Rejected':           { text: 'تم رفض هذا الطلب، يمكنك مراجعة السبب من سجل الطلبات', icon: 'fa-circle-xmark' }
+        };
 
         function openStagesModal(appId, stageIndex, serviceName) {
             document.getElementById('stg-app-id').textContent = '#' + String(appId).padStart(5, '0');
@@ -1163,6 +1237,188 @@ function getAppStageIndex($status) {
                 payBtn.innerHTML = '<i class="fa-solid fa-lock me-1"></i> تأكيد ودفع الفاتورة الآن';
             });
         }
+
+        // =========================================================================
+        // ============== نظام الإشعارات والتتبع الحي (Live Order-Style Tracking) ==============
+        // نفس فكرة تطبيقات توصيل الطلبات: تحديث تلقائي دوري لحالة الطلب + إشعار فوري
+        // عند كل تغيّر مرحلة (جاري التحضير -> جاري التوصيل...) دون الحاجة لتحديث الصفحة يدوياً
+        // =========================================================================
+
+        // الحالة الأولية المعروفة لكل طلب (لمقارنتها بما يصل عبر الاستطلاع الدوري)
+        let knownAppStatuses = {};
+        document.querySelectorAll('#appsTable tr[data-app-id]').forEach(tr => {
+            knownAppStatuses[tr.getAttribute('data-app-id')] = null; // سيُعبّأ بعد أول استطلاع
+        });
+
+        let lastKnownMaxNotifId = <?= (int)($myNotifications[0]['notif_id'] ?? 0); ?>;
+        let lastSeenNotifId = lastKnownMaxNotifId;
+        let unreadNotifCount = 0;
+        let firstPollDone = false;
+
+        function updateBellBadge() {
+            let badge = document.getElementById('bellBadge');
+            if (unreadNotifCount > 0) {
+                badge.textContent = unreadNotifCount > 9 ? '9+' : unreadNotifCount;
+                badge.classList.remove('d-none');
+                let bell = document.getElementById('bellBtn');
+                bell.classList.remove('ringing');
+                void bell.offsetWidth;
+                bell.classList.add('ringing');
+            } else {
+                badge.classList.add('d-none');
+            }
+        }
+
+        function stageIndexOf(status) {
+            const map = { 'Pending_Review': 0, 'Pending_Inspection': 1, 'Pending_Billing': 2, 'In_Progress': 3, 'Completed': 4 };
+            if (status === 'Rejected') return -1;
+            return map[status] ?? 0;
+        }
+
+        function statusBadgeHtml(status) {
+            const badges = {
+                'Pending_Review': '<span class="status-badge badge-warning"><i class="fa-solid fa-file-signature"></i> قيد المراجعة</span>',
+                'Pending_Inspection': '<span class="status-badge badge-info"><i class="fa-solid fa-helmet-safety"></i> جاري جدولة الفحص</span>',
+                'Pending_Billing': '<span class="status-badge badge-dark"><i class="fa-solid fa-file-invoice-dollar"></i> بانتظار سداد الفاتورة</span>',
+                'In_Progress': '<span class="status-badge badge-primary"><i class="fa-solid fa-person-digging"></i> جاري التركيب</span>',
+                'Completed': '<span class="status-badge badge-success"><i class="fa-solid fa-circle-check"></i> مكتمل ومفعّل بالكامل</span>',
+                'Rejected': '<span class="status-badge badge-danger"><i class="fa-solid fa-circle-xmark"></i> تم رفض الطلب</span>'
+            };
+            return badges[status] || status;
+        }
+
+        // تحديث بطاقة "متابعة طلبك المباشرة" في أعلى الصفحة
+        function renderLiveTracker(app) {
+            let card = document.getElementById('liveTrackerCard');
+            if (!app || app.app_status === 'Completed' || app.app_status === 'Rejected') {
+                card.classList.add('d-none');
+                return;
+            }
+            card.classList.remove('d-none');
+            document.getElementById('lt-app-id').textContent = '#' + String(app.app_id).padStart(5, '0') + ' - ' + app.srv_name_clean;
+
+            let idx = stageIndexOf(app.app_status);
+            let pct = Math.max(10, (idx / 4) * 100);
+            document.getElementById('ltProgressFill').style.width = pct + '%';
+
+            let stepsWrap = document.getElementById('ltSteps');
+            stepsWrap.innerHTML = '';
+            stageDefs.forEach((s, i) => {
+                let cls = i < idx ? 'done' : (i === idx ? 'current' : '');
+                let icon = i < idx ? '<i class="fa-solid fa-check"></i>' : `<i class="fa-solid ${s.icon}"></i>`;
+                stepsWrap.innerHTML += `<div class="lt-step ${cls}"><div class="lt-step-icon">${icon}</div><div class="lt-step-label">${s.short}</div></div>`;
+            });
+
+            let msg = liveStageMessages[app.app_status] || { text: 'جاري تحديث حالة طلبك...', icon: 'fa-circle-notch' };
+            document.getElementById('ltMsg').innerHTML = `<i class="fa-solid ${msg.icon}"></i> ${msg.text}`;
+        }
+
+        function pickTrackedApp(apps) {
+            // نختار أقرب طلب نشط (غير مكتمل وغير مرفوض) لعرضه في شريط التتبع الحي
+            let active = apps.filter(a => a.app_status !== 'Completed' && a.app_status !== 'Rejected');
+            return active.length ? active[0] : null;
+        }
+
+        function showLiveToast(app, prevStatus) {
+            let msg = liveStageMessages[app.app_status] || { text: 'تحديث جديد على طلبك', icon: 'fa-bell' };
+            Swal.fire({
+                toast: true,
+                position: 'top-start',
+                icon: app.app_status === 'Rejected' ? 'error' : (app.app_status === 'Completed' ? 'success' : 'info'),
+                title: 'طلب #' + String(app.app_id).padStart(5, '0') + ' (' + app.srv_name_clean + ')',
+                html: `<i class="fa-solid ${msg.icon}"></i> ${msg.text}`,
+                showConfirmButton: false,
+                timer: 6000,
+                timerProgressBar: true
+            });
+        }
+
+        function applyAppUpdate(app, isFirstLoad) {
+            let prevStatus = knownAppStatuses[app.app_id];
+            knownAppStatuses[app.app_id] = app.app_status;
+
+            // تحديث صف الجدول في سجل الطلبات دون تحديث الصفحة
+            let row = document.querySelector('#appsTable tr[data-app-id="' + app.app_id + '"]');
+            if (row) {
+                let statusCell = row.querySelector('.status-cell');
+                if (statusCell) {
+                    statusCell.innerHTML = statusBadgeHtml(app.app_status);
+                    if (!isFirstLoad && prevStatus !== null && prevStatus !== app.app_status) {
+                        statusCell.querySelector('.status-badge')?.classList.add('just-updated');
+                    }
+                }
+                let stageBtn = row.querySelector('.stage-btn');
+                if (stageBtn) {
+                    stageBtn.setAttribute('onclick', `openStagesModal(${app.app_id}, ${stageIndexOf(app.app_status)}, '${app.srv_name_clean}')`);
+                }
+                let payCell = row.querySelector('.payment-cell');
+                if (payCell && app.payment_status === 'Unpaid' && app.amount) {
+                    payCell.innerHTML = `<div class="d-flex align-items-center gap-2">
+                        <span class="badge bg-danger rounded-pill px-3 py-2 fw-bold">غير مدفوعة: ${Number(app.amount).toLocaleString('ar-SA')} ر.س</span>
+                        <button class="btn btn-sm btn-success fw-bold px-3 rounded-pill" onclick="openPaymentModal(${app.app_id}, ${app.amount}, '${app.srv_name_clean}', '${app.city_clean}', '${app.deed_no}')">
+                            <i class="fa-solid fa-credit-card"></i> سداد سريع
+                        </button></div>`;
+                } else if (payCell && app.payment_status === 'Paid') {
+                    payCell.innerHTML = `<div class="d-flex align-items-center gap-2">
+                        <span class="badge bg-success rounded-pill px-3 py-2"><i class="fa-solid fa-circle-check"></i> مدفوعة بنجاح</span>
+                        <a href="invoice_print.php?app_id=${app.app_id}" target="_blank" class="btn btn-sm btn-outline-secondary fw-bold px-3 rounded-pill"><i class="fa-solid fa-print"></i> طباعة</a></div>`;
+                }
+            }
+
+            // إشعار حي فوري بأسلوب تطبيقات التوصيل عند تغيّر الحالة فقط (وليس عند أول تحميل)
+            if (!isFirstLoad && prevStatus !== null && prevStatus !== app.app_status) {
+                showLiveToast(app, prevStatus);
+            }
+        }
+
+        function appendNewNotifications(list) {
+            if (!list.length) return;
+            let emptyState = document.getElementById('notifsEmptyState');
+            if (emptyState) emptyState.remove();
+
+            let container = document.getElementById('notifsList');
+            list.forEach(n => {
+                let div = document.createElement('div');
+                div.className = 'notif-box d-flex justify-content-between align-items-center notif-new';
+                div.setAttribute('data-notif-id', n.notif_id);
+                div.innerHTML = `<div>
+                        <div class="text-dark fw-bold mb-1">${n.message_content}</div>
+                        <div class="small text-muted"><i class="fa-regular fa-clock"></i> ${n.created_at}</div>
+                    </div>
+                    <span class="badge bg-light text-success border"><i class="fa-solid fa-circle"></i> جديد</span>`;
+                container.prepend(div);
+            });
+        }
+
+        function pollLiveUpdates() {
+            fetch('poll_updates.php?last_notif_id=' + lastKnownMaxNotifId)
+                .then(r => r.json())
+                .then(data => {
+                    if (data.status !== 'success') return;
+
+                    // 1) تحديث حالات الطلبات
+                    (data.applications || []).forEach(app => applyAppUpdate(app, !firstPollDone));
+                    renderLiveTracker(pickTrackedApp(data.applications || []));
+
+                    // 2) الإشعارات الجديدة
+                    if (data.new_notifications && data.new_notifications.length) {
+                        appendNewNotifications(data.new_notifications);
+                        lastKnownMaxNotifId = data.new_notifications[0].notif_id;
+                        // إن كان المستخدم ليس في تبويب الإشعارات الآن نزود العداد
+                        if (!document.getElementById('tab-notifs').classList.contains('active')) {
+                            unreadNotifCount += data.new_notifications.length;
+                            updateBellBadge();
+                        }
+                    }
+
+                    firstPollDone = true;
+                })
+                .catch(() => { /* تجاهل صامت لأي خطأ شبكة مؤقت */ });
+        }
+
+        // أول استطلاع فوري عند تحميل الصفحة، ثم كل 8 ثوانٍ لمحاكاة التتبع الحي لتطبيقات التوصيل
+        pollLiveUpdates();
+        setInterval(pollLiveUpdates, 8000);
     </script>
 </body>
 </html>
