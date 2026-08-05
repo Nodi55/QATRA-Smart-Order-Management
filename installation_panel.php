@@ -14,7 +14,7 @@ $msg = ""; $msgType = "";
 $empId = $_SESSION['emp_id'];
 
 // =========================================================
-// معالجة إرسال مهمة التركيب وإغلاق الطلب (مع دعم التركيب الموحد دفعة واحدة)
+// معالجة إرسال مهمة التركيب وإغلاق الطلب
 // =========================================================
 if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['complete_task'])) {
     $taskId = $_POST['task_id'];
@@ -24,7 +24,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['complete_task'])) {
     $initialReading = floatval($_POST['initial_reading']);
     $mtrSerial = trim($_POST['mtr_serial']);
     $mtrType = $_POST['mtr_type'];
-    $apply_to_all_linked = isset($_POST['apply_to_all_linked']) ? 1 : 0;
+    $install_all = isset($_POST['install_all']) ? 1 : 0;
 
     if (empty($mtrSerial)) {
         $msg = "خطأ: يجب إدخال الرقم التسلسلي للعداد.";
@@ -33,107 +33,112 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['complete_task'])) {
         try {
             $pdo->beginTransaction();
 
-            // أ. الاستعلام عن بيانات صك العقار للطلب الحالي
-            $stmtAppDetails = $pdo->prepare("SELECT cust_id, deed_no, srv_id FROM application WHERE app_id = ?");
-            $stmtAppDetails->execute([$appId]);
-            $appDetails = $stmtAppDetails->fetch();
-            $deed_no = $appDetails['deed_no'];
-            $custId = $appDetails['cust_id'];
+            // جلب صك وهويات الطلب الحالي للبحث عن المهام المزدوجة
+            $stmtApp = $pdo->prepare("SELECT deed_no, srv_id, cust_id FROM application WHERE app_id = ?");
+            $stmtApp->execute([$appId]);
+            $currentApp = $stmtApp->fetch();
 
-            // ب. التحقق من وجود الحساب الموحد للعميل، وإنشائه إن لم يكن موجوداً
-            $stmtCheckAcc = $pdo->prepare("SELECT acc_id FROM unified_account WHERE deed_no = ?");
-            $stmtCheckAcc->execute([$deed_no]);
-            $accId = $stmtCheckAcc->fetchColumn();
+            if ($currentApp) {
+                $deed_no = $currentApp['deed_no'];
+                $custId = $currentApp['cust_id'];
 
-            if (!$accId) {
-                $stmtCreateAcc = $pdo->prepare("INSERT INTO unified_account (cust_id, deed_no) VALUES (?, ?)");
-                $stmtCreateAcc->execute([$custId, $deed_no]);
-                $accId = $pdo->lastInsertId();
-            }
-
-            // جـ. جلب قائمة بالمهام المترابطة التي سيتم تفعيلها
-            $tasksToProcess = [];
-            if ($apply_to_all_linked) {
-                // جلب كافة مهام التركيب النشطة والمدفوعة المعلقة لنفس الصك والموكلة لنفس الفني
-                $stmtLinked = $pdo->prepare("
-                    SELECT it.task_id, it.app_id, a.srv_id 
-                    FROM installation_task it
-                    JOIN application a ON it.app_id = a.app_id
-                    WHERE a.deed_no = ? AND it.emp_id = ? AND it.initial_reading IS NULL
-                ");
-                $stmtLinked->execute([$deed_no, $empId]);
-                $tasksToProcess = $stmtLinked->fetchAll(PDO::FETCH_ASSOC);
-            } else {
-                $tasksToProcess[] = [
-                    'task_id' => $taskId,
-                    'app_id' => $appId,
-                    'srv_id' => $appDetails['srv_id']
-                ];
-            }
-
-            foreach ($tasksToProcess as $task) {
-                // 1. تحديث جدول تفاصيل مهمة التركيب
-                $stmtUpdateTask = $pdo->prepare("
-                    UPDATE installation_task 
-                    SET pipe_length = ?, pipe_diameter = ?, initial_reading = ? 
-                    WHERE task_id = ?
-                ");
-                $stmtUpdateTask->execute([$pipeLength, $pipeDiameter, $initialReading, $task['task_id']]);
-
-                // 2. توليد رقم عداد فريد (بلاحقة الخدمة لمنع تكرار السيريال وتخطي قيود الـ Database)
-                $srvSuffix = ($task['srv_id'] == 1) ? '-W' : '-S';
-                $finalMtrSerial = $mtrSerial . $srvSuffix;
-
-                // التحقق من تكرار السيريال قبل الإدخال لمنع الأخطاء البرمجية
-                $stmtCheckMeter = $pdo->prepare("SELECT COUNT(*) FROM meter WHERE mtr_serial = ?");
-                $stmtCheckMeter->execute([$finalMtrSerial]);
-                if ($stmtCheckMeter->fetchColumn() > 0) {
-                    throw new Exception("الرقم التسلسلي للعداد (" . $finalMtrSerial . ") مسجل مسبقاً في النظام.");
+                $tasksToProcess = [];
+                if ($install_all) {
+                    $stmtSearch = $pdo->prepare("
+                        SELECT it.task_id, it.app_id, a.srv_id 
+                        FROM installation_task it
+                        JOIN application a ON it.app_id = a.app_id
+                        WHERE a.deed_no = ? AND it.emp_id = ? AND it.initial_reading IS NULL
+                    ");
+                    $stmtSearch->execute([$deed_no, $empId]);
+                    $tasksToProcess = $stmtSearch->fetchAll(PDO::FETCH_ASSOC);
                 }
 
-                // 3. تسجيل بيانات العداد وربطه بالمهمة والحساب الموحد
-                $stmtInsertMeter = $pdo->prepare("
-                    INSERT INTO meter (mtr_serial, mtr_type, acc_id, task_id) 
-                    VALUES (?, ?, ?, ?)
-                ");
-                $stmtInsertMeter->execute([$finalMtrSerial, $mtrType, $accId, $task['task_id']]);
+                if (empty($tasksToProcess)) {
+                    $tasksToProcess = [[
+                        'task_id' => $taskId,
+                        'app_id' => $appId,
+                        'srv_id' => $currentApp['srv_id']
+                    ]];
+                }
 
-                // 4. تفعيل خطة الخدمة الرسمية في activated_service
-                $stmtCheckActSrv = $pdo->prepare("SELECT COUNT(*) FROM activated_service WHERE acc_id = ? AND srv_id = ?");
-                $stmtCheckActSrv->execute([$accId, $task['srv_id']]);
-                if ($stmtCheckActSrv->fetchColumn() == 0) {
+                foreach ($tasksToProcess as $task) {
+                    $currTaskId = $task['task_id'];
+                    $currAppId = $task['app_id'];
+                    $currSrvId = $task['srv_id'];
+
+                    // 1. تحديث جدول تفاصيل مهمة التركيب
+                    $stmtUpdateTask = $pdo->prepare("
+                        UPDATE installation_task 
+                        SET pipe_length = ?, pipe_diameter = ?, initial_reading = ? 
+                        WHERE task_id = ?
+                    ");
+                    $stmtUpdateTask->execute([$pipeLength, $pipeDiameter, $initialReading, $currTaskId]);
+
+                    // 2. التحقق من وجود الحساب الموحد للعميل، وإنشائه إن لم يكن موجوداً
+                    $stmtCheckAcc = $pdo->prepare("SELECT acc_id FROM unified_account WHERE deed_no = ?");
+                    $stmtCheckAcc->execute([$deed_no]);
+                    $accId = $stmtCheckAcc->fetchColumn();
+
+                    if (!$accId) {
+                        $stmtCreateAcc = $pdo->prepare("INSERT INTO unified_account (cust_id, deed_no) VALUES (?, ?)");
+                        $stmtCreateAcc->execute([$custId, $deed_no]);
+                        $accId = $pdo->lastInsertId();
+                    }
+
+                    // 3. تسجيل العداد وربطه باللاحقة المميزة تلافياً لتعارض فرادة الجدول المزدوج
+                    $suffix = ($currSrvId == 1) ? "-W" : "-S";
+                    $currMtrSerial = $mtrSerial . $suffix;
+
+                    // التحقق من تكرار العداد بقاعدة البيانات
+                    $stmtCheckMeter = $pdo->prepare("SELECT COUNT(*) FROM meter WHERE mtr_serial = ?");
+                    $stmtCheckMeter->execute([$currMtrSerial]);
+                    if ($stmtCheckMeter->fetchColumn() > 0) {
+                        // لتفادي التعارض، نقوم بإضافة لاحقة عشوائية مؤقتة
+                        $currMtrSerial .= rand(10, 99);
+                    }
+
+                    $stmtInsertMeter = $pdo->prepare("
+                        INSERT INTO meter (mtr_serial, mtr_type, acc_id, task_id) 
+                        VALUES (?, ?, ?, ?)
+                    ");
+                    $stmtInsertMeter->execute([$currMtrSerial, $mtrType, $accId, $currTaskId]);
+
+                    // 4. تفعيل الخدمة للعميل (Activated Service)
                     $stmtActivate = $pdo->prepare("INSERT INTO activated_service (acc_id, srv_id) VALUES (?, ?)");
-                    $stmtActivate->execute([$accId, $task['srv_id']]);
+                    $stmtActivate->execute([$accId, $currSrvId]);
+
+                    // 5. تحديث حالة الطلب العام إلى "مكتمل"
+                    $stmtUpdateApp = $pdo->prepare("UPDATE application SET app_status = 'Completed' WHERE app_id = ?");
+                    $stmtUpdateApp->execute([$currAppId]);
+
+                    // 6. تسجيل العملية في الأرشيف والتاريخ
+                    $stmtHistory = $pdo->prepare("
+                        INSERT INTO application_history (app_id, status, changed_by, change_date) 
+                        VALUES (?, 'Completed', ?, NOW())
+                    ");
+                    $stmtHistory->execute([$currAppId, $empId]);
+
+                    // 7. إنقاص عداد المهام النشطة للفني الحالي
+                    $stmtDecWorkload = $pdo->prepare("
+                        UPDATE company_employee 
+                        SET active_tasks_count = GREATEST(0, active_tasks_count - 1) 
+                        WHERE emp_id = ?
+                    ");
+                    $stmtDecWorkload->execute([$empId]);
+
+                    // 8. بث الإشعار الترحيبي ورسالة الشكر الفاخرة للعميل
+                    $srvNameText = ($currSrvId == 1) ? "المياه" : "الصرف الصحي";
+                    $welcomeNotif = "شريكنا العزيز، نود إعلامكم بأنه تم الانتهاء من تركيب عداد خدمة " . $srvNameText . " بنجاح وعقاركم الآن متصل بالشبكة الذكية بالكامل. نحن سعيدون جداً بخدمتكم، وشكراً لتعاونكم مع شركة المياه الوطنية (قطرة)!";
+                    $pdo->prepare("INSERT INTO notification (message_content, cust_id) VALUES (?, ?)")->execute([$welcomeNotif, $custId]);
                 }
 
-                // 5. تحديث حالة الطلب العام إلى "مكتمل"
-                $stmtUpdateApp = $pdo->prepare("UPDATE application SET app_status = 'Completed' WHERE app_id = ?");
-                $stmtUpdateApp->execute([$task['app_id']]);
-
-                // 6. تسجيل العملية في الأرشيف والتاريخ
-                $stmtHistory = $pdo->prepare("
-                    INSERT INTO application_history (app_id, status, changed_by, change_date) 
-                    VALUES (?, 'Completed', ?, NOW())
-                ");
-                $stmtHistory->execute([$task['app_id'], $empId]);
-
-                // 7. إنقاص عداد المهام النشطة للفني الحالي
-                $stmtDecWorkload = $pdo->prepare("
-                    UPDATE company_employee 
-                    SET active_tasks_count = GREATEST(0, active_tasks_count - 1) 
-                    WHERE emp_id = ?
-                ");
-                $stmtDecWorkload->execute([$empId]);
-
-                // 8. إطلاق إشعار ترحيبي وتأكيدي مخصص وفخم للعميل
-                $srvCleanName = ($task['srv_id'] == 1) ? 'المياه' : 'الصرف الصحي';
-                $notifMsg = "شريكنا العزيز، نود إعلامكم بأنه تم الانتهاء من تركيب عداد خدمة {$srvCleanName} بنجاح وعقاركم الآن متصل بالشبكة الذكية بالكامل. نحن سعيدون جداً بخدمتكم، وشكراً لتعاونكم مع شركة المياه الوطنية (قطرة)!";
-                $pdo->prepare("INSERT INTO notification (message_content, cust_id) VALUES (?, ?)")->execute([$notifMsg, $custId]);
+                $pdo->commit();
+                $msg = "تم تركيب وتفعيل عدادات الخدمة بنجاح، وإرسال إشعار الترحيب المخصص للعميل!";
+                $msgType = "success";
+            } else {
+                throw new Exception("المهمة المحددة غير صالحة.");
             }
-
-            $pdo->commit();
-            $msg = "تم تركيب العدادات بنجاح، وتفعيل حساب العميل، وبث رسائل الشكر والترحيب آلياً!";
-            $msgType = "success";
         } catch (Exception $e) {
             $pdo->rollBack();
             $msg = "حدث خطأ أثناء إغلاق المهمة: " . $e->getMessage();
@@ -148,7 +153,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['complete_task'])) {
 
 // 1. قائمة المهام النشطة للفني الحالي (بانتظار التركيب)
 $stmtActiveTasks = $pdo->prepare("
-    SELECT it.task_id, it.app_id, a.deed_no, a.latitude, a.longitude, a.srv_id,
+    SELECT it.task_id, it.app_id, a.deed_no, a.latitude, a.longitude, 
            c.full_name as customer_name, c.phone_number, cy.cty_name, st.srv_name
     FROM installation_task it
     JOIN application a ON it.app_id = a.app_id
@@ -176,13 +181,6 @@ $stmtCompletedTasks = $pdo->prepare("
 $stmtCompletedTasks->execute([$empId]);
 $completedTasks = $stmtCompletedTasks->fetchAll(PDO::FETCH_ASSOC);
 
-// دالة تنظيف أسماء الخدمات
-function cleanServiceName($name) {
-    if (strpos($name, 'مياه وصرف') !== false) return 'مياه وصرف';
-    if (strpos($name, 'مياه') !== false) return 'مياه';
-    if (strpos($name, 'صرف') !== false) return 'صرف';
-    return $name;
-}
 ?>
 
 <!DOCTYPE html>
@@ -193,8 +191,10 @@ function cleanServiceName($name) {
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800;900&display=swap" rel="stylesheet">
+    
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
     <style>
         :root { --navy: #092e54; --blue: #0b457f; --light: #4492d4; --bg: #f8fafc; }
@@ -216,14 +216,11 @@ function cleanServiceName($name) {
         .task-card.active-selection { border-right: 5px solid var(--light); background: #f0f7ff; }
         
         .card-title { color: var(--navy); font-weight: 900; font-size: 1.2rem; margin-bottom: 20px; display: flex; align-items: center; gap: 10px; border-bottom: 2px solid #f1f5f9; padding-bottom: 15px; }
-        .btn-brand { background: var(--blue); color: white; border: none; padding: 14px 20px; border-radius: 10px; font-weight: 800; width: 100%; transition: 0.3s; }
+        .btn-brand { background: var(--blue); color: white; border: none; padding: 12px 20px; border-radius: 10px; font-weight: 800; width: 100%; transition: 0.3s; }
         .btn-brand:hover { background: var(--navy); color: white; }
         
         .map-box { height: 350px; border-radius: 16px; border: 2px solid #e2e8f0; overflow: hidden; }
         .form-label { font-weight: 700; color: var(--navy); }
-        
-        .requirement-row { display: flex; align-items: center; justify-content: space-between; padding: 15px; background: #f8fafc; border-radius: 12px; margin-bottom: 12px; border: 1px solid #e2e8f0; }
-        .requirement-label { font-weight: 700; color: #334155; }
         
         .page-view { display: none; animation: fadeIn 0.4s; }
         .page-view.active { display: block; }
@@ -265,7 +262,6 @@ function cleanServiceName($name) {
                 </script>
             <?php endif; ?>
 
-            <!-- صفحة 1: مهام التركيب النشطة -->
             <div id="page-active-tasks" class="page-view active">
                 <?php if(empty($activeTasks)): ?>
                     <div class="text-center py-5 bg-white rounded-3 shadow-sm border">
@@ -275,16 +271,15 @@ function cleanServiceName($name) {
                     </div>
                 <?php else: ?>
                     <div class="row">
-                        <!-- القائمة الجانبية للمهام -->
                         <div class="col-lg-5" style="max-height: calc(100vh - 180px); overflow-y: auto;">
                             <?php foreach($activeTasks as $index => $task): ?>
                                 <div class="task-card <?= $index === 0 ? 'active-selection' : '' ?>" id="card-<?= $task['task_id'] ?>" onclick="selectTask(<?= htmlspecialchars(json_encode($task)) ?>, this)">
                                     <div class="d-flex justify-content-between align-items-start mb-2">
                                         <span class="badge bg-light text-dark border fw-black">طلب رقم #<?= str_pad($task['app_id'], 5, '0', STR_PAD_LEFT); ?></span>
-                                        <span class="badge bg-primary fw-bold"><i class="fa-solid fa-droplet me-1"></i> <?= htmlspecialchars(cleanServiceName($task['srv_name'])) ?></span>
+                                        <span class="badge bg-primary fw-bold"><i class="fa-solid fa-droplet me-1"></i> <?= htmlspecialchars($task['srv_name']) ?></span>
                                     </div>
                                     <h5 class="fw-black text-dark mb-1"><?= htmlspecialchars($task['customer_name']) ?></h5>
-                                    <p class="small text-muted fw-bold mb-2"><i class="fa-solid fa-location-dot text-danger"></i> العقار في: <?= htmlspecialchars(str_replace('مدينة ', '', $task['cty_name'])) ?></p>
+                                    <p class="small text-muted fw-bold mb-2"><i class="fa-solid fa-location-dot text-danger"></i> العقار في: <?= htmlspecialchars($task['cty_name']) ?></p>
                                     <div class="d-flex justify-content-between text-secondary small fw-bold">
                                         <span>رقم الصك: <?= htmlspecialchars($task['deed_no']) ?></span>
                                         <span class="text-primary"><i class="fa-solid fa-phone"></i> <?= htmlspecialchars($task['phone_number']) ?></span>
@@ -293,22 +288,20 @@ function cleanServiceName($name) {
                             <?php endforeach; ?>
                         </div>
 
-                        <!-- نموذج وملاحة المهمة المحددة -->
                         <div class="col-lg-7">
-                            <div class="admin-card bg-white p-4 rounded-3 border mb-4">
+                            <div class="admin-card bg-white p-4 border rounded-3">
                                 <div class="card-title text-primary"><i class="fa-solid fa-location-crosshairs"></i> موقع العقار وتفاصيل الملاحة</div>
                                 <div class="map-box mb-3" id="taskMap"></div>
                                 <div class="d-flex gap-2 mb-4">
                                     <a id="btnGoogleMap" href="#" target="_blank" class="btn btn-outline-danger w-100 fw-bold rounded-pill"><i class="fa-solid fa-map-location-dot me-2"></i> فتح اتجاهات الملاحة في خرائط جوجل</a>
                                 </div>
 
-                                <div class="card-title text-success"><i class="fa-solid fa-file-invoice"></i> إدخال البيانات الفنية للعداد والتركيب</div>
+                                <div class="card-title text-success"><i class="fa-solid fa-file-invoice"></i> إدخل البيانات الفنية للعداد والتركيب</div>
                                 <form method="POST" id="installForm">
-                                    <input type="hidden" name="complete_task" value="1">
                                     <input type="hidden" name="task_id" id="form_task_id" value="<?= $activeTasks[0]['task_id'] ?>">
                                     <input type="hidden" name="app_id" id="form_app_id" value="<?= $activeTasks[0]['app_id'] ?>">
                                     
-                                    <div class="row g-3 mb-3">
+                                    <div class="row g-3">
                                         <div class="col-md-6">
                                             <label class="form-label">طول الأنبوب المستخدم (متر)</label>
                                             <input type="number" step="0.1" name="pipe_length" class="form-control" placeholder="مثال: 12.5" required>
@@ -325,13 +318,13 @@ function cleanServiceName($name) {
                                         </div>
                                         <div class="col-md-6">
                                             <label class="form-label">الرقم التسلسلي للعداد الجديد (Serial)</label>
-                                            <input type="text" name="mtr_serial" class="form-control" placeholder="أدخل الرقم التسلسلي الفريد" required>
+                                            <input type="text" name="mtr_serial" class="form-control" placeholder="أدخل الرقم التسلسلي الفريد للعداد" required>
                                         </div>
                                         <div class="col-md-6">
                                             <label class="form-label">نوع العداد المخصص</label>
                                             <select name="mtr_type" class="form-select" required>
-                                                <option value="Smart">عداد ذكي إلكتروني (Smart)</option>
-                                                <option value="Mechanical">عداد ميكانيكي (Mechanical)</option>
+                                                <option value="Smart">عداد مياه ذكي إلكتروني (Smart)</option>
+                                                <option value="Mechanical">عداد مياه ميكانيكي (Mechanical)</option>
                                             </select>
                                         </div>
                                         <div class="col-md-12">
@@ -340,22 +333,16 @@ function cleanServiceName($name) {
                                         </div>
                                     </div>
 
-                                    <!-- خيار الإنجاز والاعتماد دفعة واحدة لمنع التكرار وسهولة العمل الفني -->
-                                    <div class="requirement-row bg-light border-warning mb-4" id="applyAllContainer" style="display:none;">
-                                        <div class="d-flex align-items-center gap-3">
-                                            <i class="fa-solid fa-layer-group text-warning fs-4"></i>
-                                            <div>
-                                                <span class="requirement-label d-block text-dark">تفعيل وإنجاز كافة مهام التركيب المترابطة؟</span>
-                                                <small class="text-muted">تفعيل هذا الخيار يقوم بتركيب عداد المياه والصرف معاً دفعة واحدة لتوفير الإجراءات!</small>
-                                            </div>
-                                        </div>
-                                        <div class="form-check form-switch fs-4">
-                                            <input class="form-check-input" type="checkbox" name="apply_to_all_linked" id="apply_to_all_linked" role="switch" checked>
-                                        </div>
+                                    <!-- خيار الإنجاز والاعتماد المزدوج للعدادات دفعة واحدة -->
+                                    <div class="form-check my-4 text-end">
+                                        <input class="form-check-input float-end ms-2" type="checkbox" name="install_all" id="install_all" value="1" checked>
+                                        <label class="form-check-label fw-bold text-success" for="install_all">
+                                            تفعيل وإنجاز كافة مهام التركيب المترابطة (مياه وصرف) المزدوجة المعلقة لهذا العقار معاً دفعة واحدة
+                                        </label>
                                     </div>
 
                                     <div class="mt-4">
-                                        <button type="submit" class="btn-brand bg-success py-3 rounded-3 shadow-sm"><i class="fa-solid fa-circle-check me-2"></i> تأكيد التركيب وتفعيل الخدمة والعداد</button>
+                                        <button type="submit" name="complete_task" class="btn-brand bg-success w-100 py-3 rounded-3 shadow-sm fw-black"><i class="fa-solid fa-circle-check me-2"></i> تأكيد التركيب وتفعيل الخدمة والعداد</button>
                                     </div>
                                 </form>
                             </div>
@@ -364,9 +351,8 @@ function cleanServiceName($name) {
                 <?php endif; ?>
             </div>
 
-            <!-- صفحة 2: العدادات المركبة سابقاً -->
             <div id="page-completed-tasks" class="page-view">
-                <div class="admin-card bg-white p-4 rounded-3 border">
+                <div class="admin-card bg-white p-4 border rounded-3">
                     <div class="card-title text-success"><i class="fa-solid fa-clock-rotate-left"></i> سجل العدادات التي تم تركيبها</div>
                     <?php if(empty($completedTasks)): ?>
                         <div class="text-center py-5"><i class="fa-solid fa-folder-open text-muted fs-1 mb-3"></i><h5 class="fw-bold text-muted">لا توجد أي عدادات مسجلة باسمك بعد</h5></div>
@@ -379,7 +365,7 @@ function cleanServiceName($name) {
                                         <th>المشترك</th>
                                         <th>الخدمة</th>
                                         <th>المدينة</th>
-                                        <th>الرقم التسلسلي</th>
+                                        <th>الرقم التسلسلي للعداد</th>
                                         <th>نوع العداد</th>
                                         <th>مواصفات التوصيل</th>
                                     </tr>
@@ -389,8 +375,8 @@ function cleanServiceName($name) {
                                     <tr>
                                         <td class="fw-bold text-muted">#<?= str_pad($comp['app_id'], 5, '0', STR_PAD_LEFT); ?></td>
                                         <td class="fw-bold text-dark"><?= htmlspecialchars($comp['customer_name']); ?></td>
-                                        <td><span class="badge bg-light text-primary border"><?= htmlspecialchars(cleanServiceName($comp['srv_name'])); ?></span></td>
-                                        <td><?= htmlspecialchars(str_replace('مدينة ', '', $comp['cty_name'])); ?></td>
+                                        <td><span class="badge bg-light text-primary border"><?= htmlspecialchars($comp['srv_name']); ?></span></td>
+                                        <td><?= htmlspecialchars($comp['cty_name']); ?></td>
                                         <td><span class="badge bg-secondary font-monospace fs-6"><?= htmlspecialchars($comp['mtr_serial']); ?></span></td>
                                         <td><span class="badge bg-success"><?= $comp['mtr_type'] == 'Smart' ? 'ذكي' : 'ميكانيكي' ?></span></td>
                                         <td class="small text-muted fw-bold">
@@ -414,7 +400,6 @@ function cleanServiceName($name) {
         let currentMap;
         let currentMarker;
 
-        // إدارة التبويبات والصفحات
         function openPage(pageId, element) {
             document.querySelectorAll('.page-view').forEach(p => p.classList.remove('active'));
             document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
@@ -427,26 +412,13 @@ function cleanServiceName($name) {
             }
         }
 
-        // اختيار المهمة وتحديث بيانات الخريطة والنموذج
         function selectTask(task, element) {
             document.querySelectorAll('.task-card').forEach(c => c.classList.remove('active-selection'));
             element.classList.add('active-selection');
 
-            // تحديث الحقول المخفية للنموذج
             document.getElementById('form_task_id').value = task.task_id;
             document.getElementById('form_app_id').value = task.app_id;
 
-            // كشف عما إذا كان هناك مهام تركيب نشطة أخرى لنفس العقار لتفعيل إمكانية التنفيذ دفعة واحدة
-            let allTasks = <?= json_encode($activeTasks, JSON_UNESCAPED_UNICODE) ?>;
-            let countLinked = allTasks.filter(t => t.deed_no === task.deed_no).length;
-            if (countLinked > 1) {
-                document.getElementById('applyAllContainer').style.display = 'flex';
-            } else {
-                document.getElementById('applyAllContainer').style.display = 'none';
-                document.getElementById('apply_to_all_linked').checked = false;
-            }
-
-            // تحديث موقع الخريطة والماركر
             if (currentMap && task.latitude && task.longitude) {
                 let coords = [task.latitude, task.longitude];
                 currentMap.flyTo(coords, 15, { animate: true, duration: 1.5 });
@@ -456,12 +428,10 @@ function cleanServiceName($name) {
                     currentMarker = L.marker(coords).addTo(currentMap);
                 }
                 
-                // تحديث رابط خرائط جوجل للملاحة
                 document.getElementById('btnGoogleMap').href = `https://www.google.com/maps/dir/?api=1&destination=${task.latitude},${task.longitude}`;
             }
         }
 
-        // تهيئة الخريطة التفاعلية عند بدء التشغيل
         document.addEventListener("DOMContentLoaded", function() {
             <?php if(!empty($activeTasks)): ?>
                 let firstTask = <?= json_encode($activeTasks[0]) ?>;
@@ -474,13 +444,6 @@ function cleanServiceName($name) {
 
                 currentMarker = L.marker(initialCoords).addTo(currentMap);
                 document.getElementById('btnGoogleMap').href = `https://www.google.com/maps/dir/?api=1&destination=${firstTask.latitude},${firstTask.longitude}`;
-
-                // فحص تفعيل زر التمرير الموحد لأول مهمة نشطة عند التحميل
-                let allTasks = <?= json_encode($activeTasks, JSON_UNESCAPED_UNICODE) ?>;
-                let countLinked = allTasks.filter(t => t.deed_no === firstTask.deed_no).length;
-                if (countLinked > 1) {
-                    document.getElementById('applyAllContainer').style.display = 'flex';
-                }
             <?php endif; ?>
         });
     </script>
