@@ -119,17 +119,17 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['submit_new_app'])) {
                 $insertedCount++;
 
                 $srvNameClean = ($singleSrvId == 1) ? 'مياه' : 'صرف';
-                $appsDetails[] = "طلب {$srvNameClean} رقم (#" . str_pad($newAppId, 5, '0', STR_PAD_LEFT) . ")";
+                $appDetailLine = "طلب {$srvNameClean} رقم (#" . str_pad($newAppId, 5, '0', STR_PAD_LEFT) . ")";
 
                 // التوزيع الجغرافي الذكي لفنيي الفحص لكل طلب على حدة لتقليل العبء
                 if ($appStatus == 'Pending_Inspection') {
                     $bestTechStmt = $pdo->prepare("
-                        SELECT ce.emp_id 
+                        SELECT ce.emp_id, ce.emp_name AS emp_name
                         FROM company_employee ce
                         JOIN employee_roles er ON ce.emp_id = er.emp_id 
                         JOIN system_role sr ON er.role_id = sr.role_id
                         JOIN city c ON ce.cty_id = c.cty_id
-                        WHERE ce.is_active = 1 AND sr.role_name = 'Inspection Technician'
+                        WHERE sr.role_name = 'Inspection Technician'
                         ORDER BY 
                             (ce.cty_id = ?) DESC,
                             (c.reg_id = (SELECT reg_id FROM city WHERE cty_id = ?)) DESC,
@@ -137,13 +137,19 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['submit_new_app'])) {
                         LIMIT 1
                     ");
                     $bestTechStmt->execute([$cityId, $cityId]);
-                    $bestTechId = $bestTechStmt->fetchColumn();
+                    $bestTech = $bestTechStmt->fetch(PDO::FETCH_ASSOC);
+                    $bestTechId = $bestTech['emp_id'] ?? null;
 
                     if ($bestTechId) {
                         $pdo->prepare("INSERT INTO field_inspection (app_id, emp_id) VALUES (?, ?)")->execute([$newAppId, $bestTechId]);
                         $pdo->prepare("UPDATE company_employee SET active_tasks_count = active_tasks_count + 1 WHERE emp_id = ?")->execute([$bestTechId]);
+                        $appDetailLine .= " - تم إسناد الفحص الميداني للفني: " . $bestTech['emp_name'];
+                    } else {
+                        $appDetailLine .= " - جاري تعيين فني فحص متاح قريباً";
                     }
                 }
+
+                $appsDetails[] = $appDetailLine;
             }
 
             if ($insertedCount == 0) {
@@ -184,9 +190,12 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['pay_invoice'])) {
     try {
         $pdo->beginTransaction();
 
-        $stmt = $pdo->prepare("SELECT a.app_id, a.cust_id, a.deed_no, a.srv_id, a.cty_id, i.inv_id, i.amount 
+        $stmt = $pdo->prepare("SELECT a.app_id, a.cust_id, a.deed_no, a.srv_id, a.cty_id, i.inv_id, i.amount,
+                               s.srv_name, c.cty_name
                                FROM application a 
                                JOIN invoice i ON a.app_id = i.app_id 
+                               JOIN service_type s ON a.srv_id = s.srv_id
+                               JOIN city c ON a.cty_id = c.cty_id
                                WHERE a.app_id = ? AND i.payment_status = 'Unpaid'");
         $stmt->execute([$appId]);
         $appData = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -208,12 +217,12 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['pay_invoice'])) {
 
             // التوجيه التلقائي الجغرافي لأقرب فني تركيبات متاح في نفس المدينة/المنطقة
             $techStmt = $pdo->prepare("
-                SELECT ce.emp_id 
+                SELECT ce.emp_id, ce.emp_name AS emp_name
                 FROM company_employee ce
                 JOIN employee_roles er ON ce.emp_id = er.emp_id 
                 JOIN system_role sr ON er.role_id = sr.role_id 
                 JOIN city c ON ce.cty_id = c.cty_id
-                WHERE ce.is_active = 1 AND sr.role_name = 'Installation Technician'
+                WHERE sr.role_name = 'Installation Technician'
                 ORDER BY 
                     (ce.cty_id = ?) DESC,
                     (c.reg_id = (SELECT reg_id FROM city WHERE cty_id = ?)) DESC,
@@ -221,19 +230,39 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['pay_invoice'])) {
                 LIMIT 1
             ");
             $techStmt->execute([$appData['cty_id'], $appData['cty_id']]);
-            $techId = $techStmt->fetchColumn();
+            $tech = $techStmt->fetch(PDO::FETCH_ASSOC);
+            $techId = $tech['emp_id'] ?? null;
 
             if ($techId) {
                 $pdo->prepare("INSERT INTO installation_task (app_id, emp_id) VALUES (?, ?)")->execute([$appId, $techId]);
                 $pdo->prepare("UPDATE company_employee SET active_tasks_count = active_tasks_count + 1 WHERE emp_id = ?")->execute([$techId]);
+                $techLine = "وإسناد تركيب العداد للفني: " . $tech['emp_name'] . ".";
+            } else {
+                $techLine = "وجاري تعيين فني تركيب متاح قريباً.";
             }
 
-            $notifMsg = "تم تأكيد سداد الفاتورة رقم #" . str_pad($appId, 5, '0', STR_PAD_LEFT) . " بقيمة " . number_format($appData['amount'], 2) . " ريال بنجاح. تم إنشاء حسابك الموحد (ACC-" . str_pad($accId, 5, '0', STR_PAD_LEFT) . ") وإسناد تركيب العداد للفريق الفني.";
+            $notifMsg = "تم تأكيد سداد الفاتورة رقم #" . str_pad($appId, 5, '0', STR_PAD_LEFT) . " بقيمة " . number_format($appData['amount'], 2) . " ريال بنجاح. تم إنشاء حسابك الموحد (ACC-" . str_pad($accId, 5, '0', STR_PAD_LEFT) . ") " . $techLine;
             $pdo->prepare("INSERT INTO notification (message_content, cust_id) VALUES (?, ?)")->execute([$notifMsg, $custId]);
             $pdo->prepare("INSERT INTO application_history (app_id, status, change_date) VALUES (?, 'In_Progress', NOW())")->execute([$appId]);
 
             $pdo->commit();
-            echo json_encode(['status' => 'success', 'message' => 'تم تأكيد السداد بنجاح وتفعيل خطة التركيبات الميدانية!']);
+            echo json_encode([
+                'status' => 'success',
+                'message' => 'تم تأكيد السداد بنجاح وتفعيل خطة التركيبات الميدانية!',
+                'invoice' => [
+                    'app_id' => str_pad($appId, 5, '0', STR_PAD_LEFT),
+                    'inv_id' => str_pad($appData['inv_id'], 5, '0', STR_PAD_LEFT),
+                    'acc_id' => str_pad($accId, 5, '0', STR_PAD_LEFT),
+                    'service' => cleanServiceName($appData['srv_name']),
+                    'city' => str_replace('مدينة ', '', $appData['cty_name']),
+                    'deed_no' => $appData['deed_no'],
+                    'amount' => number_format($appData['amount'], 2),
+                    'customer_name' => $customer['full_name'],
+                    'national_id' => $nationalId,
+                    'tech_name' => $tech['emp_name'] ?? 'سيتم التعيين لاحقاً',
+                    'paid_at' => date('Y-m-d H:i')
+                ]
+            ]);
             exit;
         } else {
             $pdo->rollBack();
@@ -346,6 +375,20 @@ function getStatusBadge($status) {
     ];
     return $badges[$status] ?? '<span class="status-badge bg-secondary">' . $status . '</span>';
 }
+
+// تحديد رقم مرحلة الطلب الحالية ضمن دورة حياته الخمس (لعرض شريط المراحل والتحقق مما اكتمل منها)
+// المراحل: 0 تقديم ومطابقة الصك - 1 الفحص الميداني - 2 إصدار وسداد الفاتورة - 3 التركيب الميداني - 4 الاكتمال والتفعيل
+function getAppStageIndex($status) {
+    $map = [
+        'Pending_Review'     => 0,
+        'Pending_Inspection' => 1,
+        'Pending_Billing'    => 2,
+        'In_Progress'        => 3,
+        'Completed'          => 4
+    ];
+    if ($status === 'Rejected') return -1; // حالة خاصة: الطلب مرفوض ولا يكمل بقية المراحل
+    return $map[$status] ?? 0;
+}
 ?>
 
 <!DOCTYPE html>
@@ -427,6 +470,29 @@ function getStatusBadge($status) {
         .property-box:hover { transform: translateY(-4px); box-shadow: 0 10px 25px rgba(0,0,0,0.05); }
 
         .notif-box { background: #f8fafc; border-right: 4px solid var(--nwc-blue); border-radius: 12px; padding: 20px; margin-bottom: 15px; font-weight: 700; }
+
+        .stage-timeline { list-style: none; padding: 0; margin: 0; }
+        .stage-item { position: relative; padding-right: 50px; padding-bottom: 30px; }
+        .stage-item:last-child { padding-bottom: 0; }
+        .stage-item::before { content: ''; position: absolute; right: 15px; top: 34px; bottom: 0; width: 3px; background: #e2e8f0; }
+        .stage-item:last-child::before { display: none; }
+        .stage-icon { position: absolute; right: 0; top: 0; width: 34px; height: 34px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 0.95rem; background: #e2e8f0; color: #94a3b8; font-weight: 800; z-index: 2; }
+        .stage-item.done .stage-icon { background: #059669; color: white; }
+        .stage-item.done::before { background: #059669; }
+        .stage-item.current .stage-icon { background: var(--nwc-blue); color: white; box-shadow: 0 0 0 5px rgba(68,146,212,0.2); }
+        .stage-item.rejected .stage-icon { background: #dc2626; color: white; }
+        .stage-title { font-weight: 800; color: #1e293b; }
+        .stage-item.current .stage-title { color: var(--nwc-blue); }
+        .stage-item:not(.done):not(.current) .stage-title { color: #94a3b8; }
+        .stage-desc { font-size: 0.85rem; color: #64748b; font-weight: 600; margin-top: 2px; }
+
+        #printableInvoice { display: none; }
+        @media print {
+            body * { visibility: hidden; }
+            #printableInvoice, #printableInvoice * { visibility: visible; }
+            #printableInvoice { display: block !important; position: absolute; top: 0; right: 0; width: 100%; padding: 30px; }
+            .no-print { display: none !important; }
+        }
     </style>
 </head>
 <body>
@@ -582,15 +648,27 @@ function getStatusBadge($status) {
                                         <td><span class="badge bg-light text-secondary border">#<?= str_pad($app['app_id'], 5, '0', STR_PAD_LEFT); ?></span></td>
                                         <td><div class="fw-bold"><?= htmlspecialchars(cleanServiceName($app['srv_name'])); ?></div><div class="small text-muted"><i class="fa-solid fa-location-dot text-danger"></i> <?= htmlspecialchars(str_replace('مدينة ', '', $app['cty_name'])); ?></div></td>
                                         <td class="font-monospace text-muted"><?= htmlspecialchars($app['deed_no']); ?></td>
-                                        <td><?= getStatusBadge($app['app_status']); ?></td>
+                                        <td>
+                                            <?= getStatusBadge($app['app_status']); ?>
+                                            <button type="button" class="btn btn-sm btn-outline-primary rounded-circle mt-1" title="عرض مراحل الطلب"
+                                                onclick="openStagesModal(<?= (int)$app['app_id']; ?>, <?= getAppStageIndex($app['app_status']); ?>, '<?= htmlspecialchars(cleanServiceName($app['srv_name']), ENT_QUOTES); ?>')">
+                                                <i class="fa-solid fa-timeline"></i>
+                                            </button>
+                                        </td>
                                         <td>
                                             <?php if ($app['payment_status'] == 'Unpaid'): ?>
                                                 <div class="d-flex align-items-center gap-2">
                                                     <span class="badge bg-danger rounded-pill px-3 py-2 fw-bold">غير مدفوعة: <?= number_format($app['amount']); ?> ر.س</span>
-                                                    <button class="btn btn-sm btn-success fw-bold px-3 rounded-pill" onclick="simulatePayment(<?= $app['app_id']; ?>, <?= $app['amount']; ?>)"><i class="fa-solid fa-credit-card"></i> سداد سريع</button>
+                                                    <button class="btn btn-sm btn-success fw-bold px-3 rounded-pill"
+                                                        onclick="openPaymentModal(<?= (int)$app['app_id']; ?>, <?= (float)$app['amount']; ?>, '<?= htmlspecialchars(cleanServiceName($app['srv_name']), ENT_QUOTES); ?>', '<?= htmlspecialchars(str_replace('مدينة ', '', $app['cty_name']), ENT_QUOTES); ?>', '<?= htmlspecialchars($app['deed_no'], ENT_QUOTES); ?>')">
+                                                        <i class="fa-solid fa-credit-card"></i> سداد سريع
+                                                    </button>
                                                 </div>
                                             <?php elseif ($app['payment_status'] == 'Paid'): ?>
-                                                <span class="badge bg-success rounded-pill px-3 py-2"><i class="fa-solid fa-circle-check"></i> مدفوعة بنجاح</span>
+                                                <div class="d-flex align-items-center gap-2">
+                                                    <span class="badge bg-success rounded-pill px-3 py-2"><i class="fa-solid fa-circle-check"></i> مدفوعة بنجاح</span>
+                                                    <a href="invoice_print.php?app_id=<?= (int)$app['app_id']; ?>" target="_blank" class="btn btn-sm btn-outline-secondary fw-bold px-3 rounded-pill"><i class="fa-solid fa-print"></i> طباعة</a>
+                                                </div>
                                             <?php else: ?>
                                                 <span class="text-muted">-</span>
                                             <?php endif; ?>
@@ -715,6 +793,119 @@ function getStatusBadge($status) {
         </div>
     </div>
 
+    <!-- نافذة سداد الفاتورة (Payment Modal) -->
+    <div class="modal fade" id="paymentModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content" style="border-radius: 24px; border: none; box-shadow: 0 25px 50px rgba(0,0,0,0.2); overflow: hidden;">
+                <div class="p-4 text-white text-center" style="background: linear-gradient(135deg, var(--nwc-navy), var(--nwc-blue));">
+                    <i class="fa-solid fa-file-invoice-dollar fs-1 mb-2 d-block"></i>
+                    <h4 class="fw-black m-0">تفاصيل فاتورة الربط والتركيب</h4>
+                    <small class="opacity-75">راجع بيانات الفاتورة جيداً قبل تأكيد السداد</small>
+                </div>
+                <button type="button" class="btn-close btn-close-white position-absolute top-0 end-0 m-3" data-bs-dismiss="modal" style="z-index: 10;"></button>
+
+                <div class="modal-body p-4">
+                    <div class="bg-light p-3 mb-3" style="border-radius: 16px; border: 1px solid #e2e8f0;">
+                        <div class="d-flex justify-content-between align-items-center mb-3 pb-3 border-bottom">
+                            <span class="text-muted fw-bold"><i class="fa-solid fa-hashtag me-1"></i> رقم الطلب</span>
+                            <span class="fw-black text-dark" id="pm-app-id">-</span>
+                        </div>
+                        <div class="d-flex justify-content-between align-items-center mb-3 pb-3 border-bottom">
+                            <span class="text-muted fw-bold"><i class="fa-solid fa-droplet me-1"></i> نوع الخدمة</span>
+                            <span class="fw-bold text-dark" id="pm-service">-</span>
+                        </div>
+                        <div class="d-flex justify-content-between align-items-center mb-3 pb-3 border-bottom">
+                            <span class="text-muted fw-bold"><i class="fa-solid fa-location-dot me-1"></i> المدينة</span>
+                            <span class="fw-bold text-dark" id="pm-city">-</span>
+                        </div>
+                        <div class="d-flex justify-content-between align-items-center">
+                            <span class="text-muted fw-bold"><i class="fa-regular fa-id-card me-1"></i> رقم الصك</span>
+                            <span class="fw-bold text-dark font-monospace" id="pm-deed">-</span>
+                        </div>
+                    </div>
+
+                    <div class="text-center p-3 mb-3" style="background: #ecfdf5; border: 1px solid #a7f3d0; border-radius: 16px;">
+                        <div class="text-muted fw-bold small mb-1">إجمالي المبلغ المستحق</div>
+                        <h2 class="fw-black text-success m-0" id="pm-amount">0.00 ر.س</h2>
+                    </div>
+
+                    <div class="p-3 bg-light rounded-3 text-center small text-secondary border mb-3">
+                        <i class="fa-solid fa-shield-halved text-success mb-2 fs-4 d-block"></i>
+                        عملية السداد محمية وموثقة وآمنة 100% بنظام قطرة
+                    </div>
+
+                    <div id="pm-error" class="alert alert-danger d-none fw-bold text-center"></div>
+
+                    <button type="button" class="btn-brand" id="pm-pay-btn" onclick="confirmPayment()">
+                        <i class="fa-solid fa-lock me-1"></i> تأكيد ودفع الفاتورة الآن
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- نافذة الفاتورة القابلة للطباعة بعد نجاح السداد -->
+    <div class="modal fade" id="invoiceModal" tabindex="-1" aria-hidden="true" data-bs-backdrop="static">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content" style="border-radius: 24px; border: none; box-shadow: 0 25px 50px rgba(0,0,0,0.2); overflow: hidden;">
+                <div class="p-4 text-white text-center no-print" style="background: linear-gradient(135deg, #059669, #10b981);">
+                    <i class="fa-solid fa-circle-check fs-1 mb-2 d-block"></i>
+                    <h4 class="fw-black m-0">تم السداد بنجاح!</h4>
+                    <small class="opacity-75">يمكنك طباعة نسخة من الفاتورة للاحتفاظ بها</small>
+                </div>
+
+                <div class="modal-body p-4">
+                    <div id="printableInvoice">
+                        <div class="text-center mb-4">
+                            <h4 class="fw-black text-dark m-0">فاتورة سداد - نظام قطرة</h4>
+                            <small class="text-muted">إيصال إلكتروني رسمي</small>
+                        </div>
+                        <div class="bg-light p-3 mb-3" style="border-radius: 16px; border: 1px solid #e2e8f0;">
+                            <div class="d-flex justify-content-between mb-2"><span class="text-muted fw-bold">رقم الفاتورة</span><span class="fw-black" id="inv-inv-id">-</span></div>
+                            <div class="d-flex justify-content-between mb-2"><span class="text-muted fw-bold">رقم الطلب</span><span class="fw-bold" id="inv-app-id">-</span></div>
+                            <div class="d-flex justify-content-between mb-2"><span class="text-muted fw-bold">اسم العميل</span><span class="fw-bold" id="inv-customer">-</span></div>
+                            <div class="d-flex justify-content-between mb-2"><span class="text-muted fw-bold">رقم الهوية</span><span class="fw-bold" id="inv-national-id">-</span></div>
+                            <div class="d-flex justify-content-between mb-2"><span class="text-muted fw-bold">نوع الخدمة</span><span class="fw-bold" id="inv-service">-</span></div>
+                            <div class="d-flex justify-content-between mb-2"><span class="text-muted fw-bold">المدينة</span><span class="fw-bold" id="inv-city">-</span></div>
+                            <div class="d-flex justify-content-between mb-2"><span class="text-muted fw-bold">رقم الصك</span><span class="fw-bold font-monospace" id="inv-deed">-</span></div>
+                            <div class="d-flex justify-content-between mb-2"><span class="text-muted fw-bold">الحساب الموحد</span><span class="fw-bold" id="inv-acc">-</span></div>
+                            <div class="d-flex justify-content-between mb-2"><span class="text-muted fw-bold">فني التركيب المسنَد</span><span class="fw-bold" id="inv-tech">-</span></div>
+                            <div class="d-flex justify-content-between"><span class="text-muted fw-bold">تاريخ ووقت السداد</span><span class="fw-bold" id="inv-date">-</span></div>
+                        </div>
+                        <div class="text-center p-3" style="background: #ecfdf5; border: 1px solid #a7f3d0; border-radius: 16px;">
+                            <div class="text-muted fw-bold small mb-1">المبلغ المسدد</div>
+                            <h2 class="fw-black text-success m-0" id="inv-amount">0.00 ر.س</h2>
+                        </div>
+                    </div>
+
+                    <div class="d-flex gap-2 mt-4 no-print">
+                        <button type="button" class="btn btn-brand" style="width: auto; flex: 1;" onclick="goToPrintPage()"><i class="fa-solid fa-print me-1"></i> طباعة الفاتورة</button>
+                        <button type="button" class="btn btn-outline-secondary fw-bold" style="border-radius: 16px;" onclick="closeInvoiceModal()">إغلاق ومتابعة</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- نافذة مراحل حياة الطلب -->
+    <div class="modal fade" id="stagesModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content" style="border-radius: 24px; border: none; box-shadow: 0 25px 50px rgba(0,0,0,0.2);">
+                <div class="modal-header border-0 pb-0">
+                    <h5 class="fw-black text-dark m-0"><i class="fa-solid fa-timeline text-primary me-2"></i> مراحل الطلب <span id="stg-app-id" class="text-muted"></span></h5>
+                    <button type="button" class="btn-close ms-auto" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body p-4">
+                    <div class="text-muted fw-bold small mb-4" id="stg-service">-</div>
+                    <ul class="stage-timeline" id="stg-timeline"></ul>
+                    <div id="stg-rejected-msg" class="alert alert-danger fw-bold text-center d-none mt-3">
+                        <i class="fa-solid fa-circle-xmark"></i> تم رفض هذا الطلب ولن يكمل بقية المراحل.
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
     <script>
         // تفعيل الفقاعات المائية المتحركة
@@ -831,53 +1022,145 @@ function getStatusBadge($status) {
             });
         });
 
-        function simulatePayment(appId, amount) {
-            Swal.fire({
-                title: 'بوابة الدفع الإلكتروني الموحدة',
-                html: `<div style="text-align: right; font-weight: 700;">
-                        <p class="mb-2 text-muted">طلب الخدمة رقم: <span class="text-dark">#${appId}</span></p>
-                        <p class="mb-3 text-muted">قيمة الفاتورة المستحقة للربط والتركيب:</p>
-                        <h4 class="text-success fw-black text-center mb-4">${amount.toLocaleString()} ريال سعودي</h4>
-                        <div class="p-3 bg-light rounded-3 text-center small text-secondary border">
-                            <i class="fa-solid fa-shield-halved text-success mb-2 fs-4 d-block"></i>
-                            عملية السداد محمية وموثقة وآمنة 100% بنظام قطرة
-                        </div>
-                       </div>`,
-                showCancelButton: true,
-                confirmButtonText: 'تأكيد ودفع الفاتورة',
-                cancelButtonText: 'إلغاء',
-                confirmButtonColor: '#10b981',
-                cancelButtonColor: '#6c757d',
-                showLoaderOnConfirm: true,
-                preConfirm: () => {
-                    let fd = new FormData();
-                    fd.append('pay_invoice', '1');
-                    fd.append('app_id', appId);
+        // ============== نافذة سداد الفاتورة الجديدة ==============
+        let currentPaymentAppId = null;
 
-                    return fetch('dashboard.php', { method: 'POST', body: fd })
-                    .then(response => response.json())
-                    .then(data => {
-                        if (data.status === 'error') {
-                            throw new Error(data.message);
-                        }
-                        return data;
-                    })
-                    .catch(error => {
-                        Swal.showValidationMessage(`خطأ: ${error.message}`);
-                    });
-                },
-                allowOutsideClick: () => !Swal.isLoading()
-            }).then((result) => {
-                if (result.isConfirmed) {
-                    Swal.fire({
-                        icon: 'success',
-                        title: 'تم السداد بنجاح!',
-                        text: result.value.message,
-                        confirmButtonColor: '#10b981'
-                    }).then(() => {
-                        window.location.reload();
-                    });
+        function openPaymentModal(appId, amount, serviceName, cityName, deedNo) {
+            currentPaymentAppId = appId;
+            document.getElementById('pm-app-id').textContent = '#' + String(appId).padStart(5, '0');
+            document.getElementById('pm-service').textContent = serviceName;
+            document.getElementById('pm-city').textContent = cityName;
+            document.getElementById('pm-deed').textContent = deedNo;
+            document.getElementById('pm-amount').textContent = amount.toLocaleString('ar-SA', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' ر.س';
+
+            document.getElementById('pm-error').classList.add('d-none');
+            document.getElementById('pm-error').textContent = '';
+            let payBtn = document.getElementById('pm-pay-btn');
+            payBtn.disabled = false;
+            payBtn.innerHTML = '<i class="fa-solid fa-lock me-1"></i> تأكيد ودفع الفاتورة الآن';
+
+            let modal = new bootstrap.Modal(document.getElementById('paymentModal'));
+            modal.show();
+        }
+
+        // ============== نافذة مراحل حياة الطلب ==============
+        const stageDefs = [
+            { title: 'تقديم الطلب ومطابقة الصك', desc: 'تم إرسال الطلب ومطابقته آلياً عبر محرك (DSS) مع وزارة العدل.', icon: 'fa-file-signature' },
+            { title: 'الفحص الميداني', desc: 'زيارة فني الفحص للموقع والتحقق من جاهزية العقار.', icon: 'fa-helmet-safety' },
+            { title: 'إصدار وسداد الفاتورة', desc: 'إصدار فاتورة الربط وسدادها إلكترونياً.', icon: 'fa-file-invoice-dollar' },
+            { title: 'التركيب الميداني', desc: 'تركيب وتفعيل العداد الذكي وربط الحساب الموحد.', icon: 'fa-person-digging' },
+            { title: 'الاكتمال والتفعيل', desc: 'اكتمال جميع الإجراءات وتفعيل الخدمة بالكامل.', icon: 'fa-circle-check' }
+        ];
+
+        function openStagesModal(appId, stageIndex, serviceName) {
+            document.getElementById('stg-app-id').textContent = '#' + String(appId).padStart(5, '0');
+            document.getElementById('stg-service').textContent = serviceName;
+
+            let timeline = document.getElementById('stg-timeline');
+            let rejectedMsg = document.getElementById('stg-rejected-msg');
+            timeline.innerHTML = '';
+
+            if (stageIndex === -1) {
+                rejectedMsg.classList.remove('d-none');
+            } else {
+                rejectedMsg.classList.add('d-none');
+            }
+
+            for (let idx = 0; idx < stageDefs.length; idx++) {
+                let stage = stageDefs[idx];
+                let stateClass = '';
+                let iconHtml = `<i class="fa-solid ${stage.icon}"></i>`;
+                if (stageIndex !== -1) {
+                    if (idx < stageIndex || (idx === stageIndex && stageIndex === 4)) {
+                        stateClass = 'done';
+                        iconHtml = '<i class="fa-solid fa-check"></i>';
+                    } else if (idx === stageIndex) {
+                        stateClass = 'current';
+                        iconHtml = '<i class="fa-solid fa-spinner fa-spin"></i>';
+                    }
+                } else if (idx === 0) {
+                    stateClass = 'done';
+                    iconHtml = '<i class="fa-solid fa-check"></i>';
+                } else if (idx === 1) {
+                    stateClass = 'rejected';
+                    iconHtml = '<i class="fa-solid fa-xmark"></i>';
                 }
+
+                let li = document.createElement('li');
+                li.className = 'stage-item ' + stateClass;
+                li.innerHTML = `
+                    <div class="stage-icon">${iconHtml}</div>
+                    <div class="stage-title">${stage.title}</div>
+                    <div class="stage-desc">${stage.desc}</div>
+                `;
+                timeline.appendChild(li);
+
+                // نوقف عرض بقية المراحل بعد نقطة الرفض
+                if (stageIndex === -1 && idx === 1) break;
+            }
+
+            new bootstrap.Modal(document.getElementById('stagesModal')).show();
+        }
+
+        function goToPrintPage() {
+            if (!currentPaymentAppId) return;
+            window.open('invoice_print.php?app_id=' + currentPaymentAppId, '_blank');
+        }
+
+        function closeInvoiceModal() {
+            bootstrap.Modal.getInstance(document.getElementById('invoiceModal')).hide();
+            window.location.reload();
+        }
+
+        function confirmPayment() {
+            if (!currentPaymentAppId) return;
+
+            let payBtn = document.getElementById('pm-pay-btn');
+            let errorBox = document.getElementById('pm-error');
+            errorBox.classList.add('d-none');
+            payBtn.disabled = true;
+            payBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> جاري تأكيد السداد...';
+
+            let fd = new FormData();
+            fd.append('pay_invoice', '1');
+            fd.append('app_id', currentPaymentAppId);
+
+            fetch('dashboard.php', { method: 'POST', body: fd })
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === 'error') {
+                    errorBox.textContent = data.message;
+                    errorBox.classList.remove('d-none');
+                    payBtn.disabled = false;
+                    payBtn.innerHTML = '<i class="fa-solid fa-lock me-1"></i> تأكيد ودفع الفاتورة الآن';
+                    return;
+                }
+
+                let modalEl = document.getElementById('paymentModal');
+                bootstrap.Modal.getInstance(modalEl).hide();
+
+                let inv = data.invoice;
+                document.getElementById('inv-inv-id').textContent = '#' + inv.inv_id;
+                document.getElementById('inv-app-id').textContent = '#' + inv.app_id;
+                document.getElementById('inv-customer').textContent = inv.customer_name;
+                document.getElementById('inv-national-id').textContent = inv.national_id;
+                document.getElementById('inv-service').textContent = inv.service;
+                document.getElementById('inv-city').textContent = inv.city;
+                document.getElementById('inv-deed').textContent = inv.deed_no;
+                document.getElementById('inv-acc').textContent = 'ACC-' + inv.acc_id;
+                document.getElementById('inv-tech').textContent = inv.tech_name;
+                document.getElementById('inv-date').textContent = inv.paid_at;
+                document.getElementById('inv-amount').textContent = inv.amount + ' ر.س';
+
+                setTimeout(() => {
+                    new bootstrap.Modal(document.getElementById('invoiceModal')).show();
+                }, 350);
+            })
+            .catch(error => {
+                errorBox.textContent = 'فشل الاتصال بالخادم، يرجى المحاولة لاحقاً.';
+                errorBox.classList.remove('d-none');
+                payBtn.disabled = false;
+                payBtn.innerHTML = '<i class="fa-solid fa-lock me-1"></i> تأكيد ودفع الفاتورة الآن';
             });
         }
     </script>
