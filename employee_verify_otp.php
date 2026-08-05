@@ -16,6 +16,22 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
     $empId = $_SESSION['temp_emp_id'];
     $validOtp = null;
 
+    if ($_SERVER["REQUEST_METHOD"] == "POST") {
+    $enteredCode = trim($_POST['otp_code']);
+    $empId = $_SESSION['temp_emp_id'];
+    $validOtp = null;
+
+    try {
+        // حماية منطقية: إضافة حقل purpose للتأكد من أن الرمز تم توليده لتسجيل الدخول فقط
+        $stmt = $pdo->prepare("SELECT otp_id FROM otp_code WHERE emp_id = ? AND code = ? AND is_used = 0 AND purpose = 'login' AND expiry_time > NOW() ORDER BY otp_id DESC LIMIT 1");
+        $stmt->execute([$empId, $enteredCode]);
+        $validOtp = $stmt->fetch(PDO::FETCH_ASSOC);
+    } catch (PDOException $e) {
+        $errorMsg = "حدث خطأ في الاتصال بقاعدة البيانات.";
+    }
+    
+    // يتبع بقية كود الجلسة والتحويل كما هي...
+
     // --- التعديل الأمني: التحقق من صحة الرمز من قاعدة البيانات ---
     try {
         $stmt = $pdo->prepare("SELECT otp_id FROM otp_code WHERE emp_id = ? AND code = ? AND is_used = 0 AND expiry_time > NOW() ORDER BY otp_id DESC LIMIT 1");
