@@ -932,7 +932,7 @@ function getAppStageIndex($status) {
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© Qatra Smart Systems' }).addTo(map);
         let marker;
         const cityCoords = {
-            'الرياض': [24.7136, 46.6753],
+            'الشماسية': [24.7136, 46.6753],
             'بريدة': [26.3260, 43.9390],
             'عنيزة': [26.0855, 43.9781],
             'الرس': [25.8679, 43.4975],
