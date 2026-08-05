@@ -3,6 +3,14 @@ error_reporting(E_ALL);
 ini_set('display_errors', 1);
 session_start();
 
+// معالجة تسجيل الخروج
+if (isset($_GET['logout'])) {
+    session_unset();
+    session_destroy();
+    header("Location: employee_login.php");
+    exit;
+}
+
 // التحقق من تسجيل الدخول
 if (!isset($_SESSION['emp_id'])) {
     header("Location: employee_login.php");
