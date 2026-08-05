@@ -8,6 +8,21 @@ if (!isset($_SESSION['emp_id']) || !in_array('Installation Technician', $_SESSIO
     header("Location: employee_dashboard.php");
     exit;
 }
+// 3. التحقق من تكرار العداد بقاعدة البيانات لمنع التضارب
+$stmtCheckMeter = $pdo->prepare("SELECT COUNT(*) FROM meter WHERE mtr_serial = ?");
+$stmtCheckMeter->execute([$currMtrSerial]);
+
+if ($stmtCheckMeter->fetchColumn() > 0) {
+    // تم إلغاء الإضافة العشوائية الصامتة: $currMtrSerial .= rand(10, 99);
+    // رمي تنبيه واستثناء صريح يظهر للفني في لوحة التحكم لمراجعة الأرقام المكتوبة
+    throw new Exception("خطأ: رقم العداد التسلسلي ($currMtrSerial) مسجل مسبقاً لعقار آخر في النظام. يرجى مراجعة الرقم المكتوب على العداد الميداني وتصحيحه.");
+}
+
+$stmtInsertMeter = $pdo->prepare("
+    INSERT INTO meter (mtr_serial, mtr_type, acc_id, task_id)
+    VALUES (?, ?, ?, ?)
+");
+$stmtInsertMeter->execute([$currMtrSerial, $mtrType, $accId, $currTaskId]);
 
 require_once 'db_connect.php';
 $msg = ""; $msgType = "";
@@ -355,6 +370,8 @@ $completedTasks = $stmtCompletedTasks->fetchAll(PDO::FETCH_ASSOC);
                                         </div>
                                         <textarea name="installer_notes" id="installer_notes_field" class="form-control" rows="3" placeholder="اكتب هنا أي ملاحظات إضافية عن التركيب أو حالة الموقع..." style="display:none;"></textarea>
                                     </div>
+
+
 
                                     <!-- خيار الإنجاز والاعتماد المزدوج للعدادات دفعة واحدة -->
                                     <div class="form-check my-4 text-end">
