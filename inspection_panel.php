@@ -31,6 +31,19 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['submit_inspection'])) 
     $inspection_result = $_POST['inspection_result']; // 'Passed' or 'Failed'
     $inspect_all = isset($_POST['inspect_all']) ? 1 : 0;
 
+    // ملاحظات الفني الإضافية (اختيارية)
+    $inspector_notes = null;
+    if (isset($_POST['add_notes']) && isset($_POST['inspector_notes']) && trim($_POST['inspector_notes']) !== '') {
+        $inspector_notes = trim($_POST['inspector_notes']);
+    }
+
+    // تهيئة الجدول ليقبل عمود الملاحظات إذا لم يكن موجوداً
+    try {
+        $pdo->query("SELECT inspector_notes FROM field_inspection LIMIT 1");
+    } catch (Exception $e) {
+        $pdo->exec("ALTER TABLE field_inspection ADD COLUMN inspector_notes TEXT NULL");
+    }
+
     $site_photos_url = "";
     
     // معالجة رفع الصورة الميدانية
@@ -101,10 +114,10 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['submit_inspection'])) 
                     $stmtUpdate = $pdo->prepare("
                         UPDATE field_inspection 
                         SET building_readiness = ?, doors_windows_installed = ?, meter_spot_painted = ?, 
-                            site_photos_url = ?, inspection_result = ? 
+                            site_photos_url = ?, inspection_result = ?, inspector_notes = ?
                         WHERE insp_id = ?
                     ");
-                    $stmtUpdate->execute([$building_readiness, $doors_windows_installed, $meter_spot_painted, $site_photos_url, $inspection_result, $currInspId]);
+                    $stmtUpdate->execute([$building_readiness, $doors_windows_installed, $meter_spot_painted, $site_photos_url, $inspection_result, $inspector_notes, $currInspId]);
 
                     // 2. تحديث الطلب بناءً على النتيجة
                     if ($inspection_result == 'Passed') {
@@ -442,6 +455,16 @@ $completedTasks = $stmtHistory->fetchAll(PDO::FETCH_ASSOC);
                                             </div>
                                         </div>
 
+                                        <div class="mb-4">
+                                            <div class="form-check mb-2">
+                                                <input class="form-check-input" type="checkbox" name="add_notes" id="add_notes_check" onchange="toggleNotes(this)">
+                                                <label class="form-check-label fw-bold text-dark" for="add_notes_check">
+                                                    <i class="fa-solid fa-note-sticky text-primary me-1"></i> إضافة ملاحظات ميدانية إضافية (اختياري)
+                                                </label>
+                                            </div>
+                                            <textarea name="inspector_notes" id="inspector_notes_field" class="form-control" rows="3" placeholder="اكتب هنا أي ملاحظات إضافية عن حالة الموقع أو العقار..." style="display:none;"></textarea>
+                                        </div>
+
                                         <!-- تفعيل قرار الفحص والفوترة المجمعة -->
                                         <div class="form-check mb-4 text-end">
                                             <input class="form-check-input float-end ms-2" type="checkbox" name="inspect_all" id="inspect_all" value="1" checked>
@@ -581,6 +604,17 @@ $completedTasks = $stmtHistory->fetchAll(PDO::FETCH_ASSOC);
                     label.innerText = "تم التقاط الصورة بنجاح: " + input.files[0].name;
                 }
                 reader.readAsDataURL(input.files[0]);
+            }
+        }
+
+        function toggleNotes(checkbox) {
+            const field = document.getElementById('inspector_notes_field');
+            if (checkbox.checked) {
+                field.style.display = 'block';
+                field.focus();
+            } else {
+                field.style.display = 'none';
+                field.value = '';
             }
         }
 

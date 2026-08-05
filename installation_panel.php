@@ -13,6 +13,13 @@ require_once 'db_connect.php';
 $msg = ""; $msgType = "";
 $empId = $_SESSION['emp_id'];
 
+// تهيئة الجدول ليقبل عمود الملاحظات إذا لم يكن موجوداً بعد
+try {
+    $pdo->query("SELECT installer_notes FROM installation_task LIMIT 1");
+} catch (Exception $e) {
+    $pdo->exec("ALTER TABLE installation_task ADD COLUMN installer_notes TEXT NULL");
+}
+
 // =========================================================
 // معالجة إرسال مهمة التركيب وإغلاق الطلب
 // =========================================================
@@ -25,6 +32,12 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['complete_task'])) {
     $mtrSerial = trim($_POST['mtr_serial']);
     $mtrType = $_POST['mtr_type'];
     $install_all = isset($_POST['install_all']) ? 1 : 0;
+
+    // ملاحظات الفني الإضافية (اختيارية)
+    $installer_notes = null;
+    if (isset($_POST['add_notes']) && isset($_POST['installer_notes']) && trim($_POST['installer_notes']) !== '') {
+        $installer_notes = trim($_POST['installer_notes']);
+    }
 
     if (empty($mtrSerial)) {
         $msg = "خطأ: يجب إدخال الرقم التسلسلي للعداد.";
@@ -70,10 +83,10 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['complete_task'])) {
                     // 1. تحديث جدول تفاصيل مهمة التركيب
                     $stmtUpdateTask = $pdo->prepare("
                         UPDATE installation_task 
-                        SET pipe_length = ?, pipe_diameter = ?, initial_reading = ? 
+                        SET pipe_length = ?, pipe_diameter = ?, initial_reading = ?, installer_notes = ?
                         WHERE task_id = ?
                     ");
-                    $stmtUpdateTask->execute([$pipeLength, $pipeDiameter, $initialReading, $currTaskId]);
+                    $stmtUpdateTask->execute([$pipeLength, $pipeDiameter, $initialReading, $installer_notes, $currTaskId]);
 
                     // 2. التحقق من وجود الحساب الموحد للعميل، وإنشائه إن لم يكن موجوداً
                     $stmtCheckAcc = $pdo->prepare("SELECT acc_id FROM unified_account WHERE deed_no = ?");
@@ -333,6 +346,16 @@ $completedTasks = $stmtCompletedTasks->fetchAll(PDO::FETCH_ASSOC);
                                         </div>
                                     </div>
 
+                                    <div class="mt-4">
+                                        <div class="form-check mb-2">
+                                            <input class="form-check-input" type="checkbox" name="add_notes" id="add_notes_check" onchange="toggleNotes(this)">
+                                            <label class="form-check-label fw-bold text-dark" for="add_notes_check">
+                                                <i class="fa-solid fa-note-sticky text-primary me-1"></i> إضافة ملاحظات تركيب إضافية (اختياري)
+                                            </label>
+                                        </div>
+                                        <textarea name="installer_notes" id="installer_notes_field" class="form-control" rows="3" placeholder="اكتب هنا أي ملاحظات إضافية عن التركيب أو حالة الموقع..." style="display:none;"></textarea>
+                                    </div>
+
                                     <!-- خيار الإنجاز والاعتماد المزدوج للعدادات دفعة واحدة -->
                                     <div class="form-check my-4 text-end">
                                         <input class="form-check-input float-end ms-2" type="checkbox" name="install_all" id="install_all" value="1" checked>
@@ -368,6 +391,7 @@ $completedTasks = $stmtCompletedTasks->fetchAll(PDO::FETCH_ASSOC);
                                         <th>الرقم التسلسلي للعداد</th>
                                         <th>نوع العداد</th>
                                         <th>مواصفات التوصيل</th>
+                                        <th>التقرير</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -382,6 +406,11 @@ $completedTasks = $stmtCompletedTasks->fetchAll(PDO::FETCH_ASSOC);
                                         <td class="small text-muted fw-bold">
                                             أنبوب: <?= $comp['pipe_length']; ?>م<br>
                                             القطر: <?= $comp['pipe_diameter']; ?> بوصة
+                                        </td>
+                                        <td>
+                                            <a href="installation_report.php?task_id=<?= $comp['task_id']; ?>" target="_blank" class="btn btn-sm btn-outline-primary rounded-pill fw-bold">
+                                                <i class="fa-solid fa-file-lines me-1"></i> عرض التقرير
+                                            </a>
                                         </td>
                                     </tr>
                                     <?php endforeach; ?>
@@ -399,6 +428,17 @@ $completedTasks = $stmtCompletedTasks->fetchAll(PDO::FETCH_ASSOC);
     <script>
         let currentMap;
         let currentMarker;
+
+        function toggleNotes(checkbox) {
+            const field = document.getElementById('installer_notes_field');
+            if (checkbox.checked) {
+                field.style.display = 'block';
+                field.focus();
+            } else {
+                field.style.display = 'none';
+                field.value = '';
+            }
+        }
 
         function openPage(pageId, element) {
             document.querySelectorAll('.page-view').forEach(p => p.classList.remove('active'));
