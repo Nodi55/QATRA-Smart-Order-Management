@@ -32,7 +32,7 @@ if (!$customer) {
 
 $custId = $customer['cust_id'];
 
-// دالة تنظيف أسماء الخدمات لتبسيط المسميات
+// دالة تنظيف أسماء الخدمات الاحترافية والذكية للغاية لتبسيط المسميات
 function cleanServiceName($name) {
     if (strpos($name, 'مياه وصرف') !== false) return 'مياه وصرف';
     if (strpos($name, 'مياه') !== false) return 'مياه';
@@ -96,7 +96,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['submit_new_app'])) {
             // خوارزمية تقسيم الطلب: إذا تم اختيار "مياه وصرف" (3)، يتم إنشاء طلبين منفصلين: مياه (1) وصرف (2)
             $servicesToInsert = [];
             if ($srvId == 3) {
-                $servicesToInsert = [1, 2]; // مياه وصرف
+                $servicesToInsert = [1, 2]; // مياه (1) وصرف (2)
             } else {
                 $servicesToInsert = [$srvId];
             }
@@ -155,7 +155,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['submit_new_app'])) {
             if ($srvId == 3) {
                 $finalNotifMsg = "تم إنشاء طلبين منفصلين لعقارك بنجاح لتسريع الإنجاز والتركيب الميداني: " . implode(" و ", $appsDetails) . ". " . ($appStatus == 'Pending_Inspection' ? "تم توجيههما مباشرة للفحص الميداني الموزع." : "بانتظار المراجعة التدقيقية.");
             } else {
-                $finalNotifMsg = $notifMsg . " تم إنشاء " . implode("", $appsDetails);
+                $finalNotifMsg = $notifMsg . " تم إنشاء " . $appsDetails[0];
             }
 
             // إرسال الإشعار للمستفيد
@@ -204,12 +204,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['pay_invoice'])) {
                 $accId = $pdo->lastInsertId();
             }
 
-            // تفعيل الخدمة المحددة في جدول activated_service لمنع التكرار
-            $stmtCheckActSrv = $pdo->prepare("SELECT COUNT(*) FROM activated_service WHERE acc_id = ? AND srv_id = ?");
-            $stmtCheckActSrv->execute([$accId, $appData['srv_id']]);
-            if ($stmtCheckActSrv->fetchColumn() == 0) {
-                $pdo->prepare("INSERT INTO activated_service (acc_id, srv_id) VALUES (?, ?)")->execute([$accId, $appData['srv_id']]);
-            }
+            $pdo->prepare("INSERT INTO activated_service (acc_id, srv_id) VALUES (?, ?)")->execute([$accId, $appData['srv_id']]);
 
             // التوجيه التلقائي الجغرافي لأقرب فني تركيبات متاح في نفس المدينة/المنطقة
             $techStmt = $pdo->prepare("
@@ -233,8 +228,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['pay_invoice'])) {
                 $pdo->prepare("UPDATE company_employee SET active_tasks_count = active_tasks_count + 1 WHERE emp_id = ?")->execute([$techId]);
             }
 
-            $srvCleanName = ($appData['srv_id'] == 1) ? 'المياه' : 'الصرف الصحي';
-            $notifMsg = "تم تأكيد سداد الفاتورة لطلب {$srvCleanName} رقم #" . str_pad($appId, 5, '0', STR_PAD_LEFT) . " بقيمة " . number_format($appData['amount'], 2) . " ريال بنجاح. تم تفعيل الحساب الموحد وجاري جدولة فني التركيبات.";
+            $notifMsg = "تم تأكيد سداد الفاتورة رقم #" . str_pad($appId, 5, '0', STR_PAD_LEFT) . " بقيمة " . number_format($appData['amount'], 2) . " ريال بنجاح. تم إنشاء حسابك الموحد (ACC-" . str_pad($accId, 5, '0', STR_PAD_LEFT) . ") وإسناد تركيب العداد للفريق الفني.";
             $pdo->prepare("INSERT INTO notification (message_content, cust_id) VALUES (?, ?)")->execute([$notifMsg, $custId]);
             $pdo->prepare("INSERT INTO application_history (app_id, status, change_date) VALUES (?, 'In_Progress', NOW())")->execute([$appId]);
 
@@ -260,6 +254,7 @@ $citiesWithRegions = [];
 $services = [];
 $myApplications = [];
 $myProperties = [];
+$groupedProperties = [];
 $myNotifications = [];
 $stats = ['total' => 0, 'completed' => 0, 'pending_payment' => 0];
 
@@ -293,43 +288,41 @@ try {
         if ($app['app_status'] == 'Pending_Billing') $stats['pending_payment']++;
     }
 
-    // جلب العقارات والخدمات المفعّلة والعدادات الذكية المرتبطة بها (شاشة الحسابات والعدادات المفعّلة)
-    // لتجنب التكرار نقوم بالربط عبر مستويات SQL أو تصفيتها بالـ PHP
     $propStmt = $pdo->prepare("
         SELECT ua.acc_id, ua.deed_no, ua.creation_date, moj.land_area, moj.owner_name,
-               st.srv_id, st.srv_name as active_service, m.mtr_serial, m.mtr_type
+               st.srv_name as active_service, m.mtr_serial, m.mtr_type
         FROM unified_account ua
         JOIN moj_record moj ON ua.deed_no = moj.deed_no
         LEFT JOIN activated_service acs ON ua.acc_id = acs.acc_id
         LEFT JOIN service_type st ON acs.srv_id = st.srv_id
-        LEFT JOIN application app ON app.deed_no = ua.deed_no AND app.srv_id = st.srv_id AND app.cust_id = ua.cust_id AND app.app_status != 'Rejected'
-        LEFT JOIN installation_task it ON it.app_id = app.app_id
-        LEFT JOIN meter m ON m.task_id = it.task_id
+        LEFT JOIN meter m ON ua.acc_id = m.acc_id
         WHERE ua.cust_id = ? ORDER BY ua.creation_date DESC
     ");
     $propStmt->execute([$custId]);
-    $myPropertiesRaw = $propStmt->fetchAll(PDO::FETCH_ASSOC);
+    $myProperties = $propStmt->fetchAll(PDO::FETCH_ASSOC);
 
-    // تصفية البيانات في مصفوفة مجمعة تمنع تكرار النوافذ نهائياً لعقار المشترك
-    $myProperties = [];
-    foreach ($myPropertiesRaw as $row) {
+    // تجميع الحسابات الموحدة في بطاقات مجمعة ذكية خالية من التكرار
+    foreach ($myProperties as $row) {
         $accId = $row['acc_id'];
-        if (!isset($myProperties[$accId])) {
-            $myProperties[$accId] = [
+        if (!isset($groupedProperties[$accId])) {
+            $groupedProperties[$accId] = [
                 'acc_id' => $row['acc_id'],
                 'deed_no' => $row['deed_no'],
                 'creation_date' => $row['creation_date'],
                 'land_area' => $row['land_area'],
                 'owner_name' => $row['owner_name'],
-                'services' => []
+                'services' => [],
+                'meters' => []
             ];
         }
-        if ($row['srv_id']) {
-            $serviceKey = $row['srv_id'];
-            $myProperties[$accId]['services'][$serviceKey] = [
-                'srv_name' => $row['active_service'],
-                'mtr_serial' => $row['mtr_serial'],
-                'mtr_type' => $row['mtr_type']
+        if ($row['active_service']) {
+            $groupedProperties[$accId]['services'][$row['active_service']] = cleanServiceName($row['active_service']);
+        }
+        if ($row['mtr_serial']) {
+            $groupedProperties[$accId]['meters'][$row['mtr_serial']] = [
+                'serial' => $row['mtr_serial'],
+                'type' => $row['mtr_type'],
+                'service' => cleanServiceName($row['active_service'] ?? 'مياه')
             ];
         }
     }
@@ -416,7 +409,7 @@ function getStatusBadge($status) {
         .map-container { border: 2px solid #e2e8f0; border-radius: 20px; overflow: hidden; position: relative; height: 350px; box-shadow: inset 0 4px 10px rgba(0,0,0,0.05); }
         .map-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(248, 250, 252, 0.85); backdrop-filter: blur(8px); z-index: 1000; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--nwc-navy); transition: 0.4s; }
         
-        .btn-brand { background: linear-gradient(135deg, var(--nwc-navy), var(--nwc-blue)); color: white; border: none; border-radius: 16px; padding: 18px; font-weight: 900; font-size: 1.1rem; width: 100%; transition: all 0.4s; box-shadow: 0 10px 25px rgba(9, 46, 84, 0.2); display: flex; justify-content: center; align-items: center; gap: 10px; }
+        .btn-brand { background: linear-gradient(135deg, var(--nwc-navy), var(--nwc-blue)); color: white; border: none; border-radius: 16px; padding: 18px; font-weight: 900; font-size: 1.1rem; width: 100%; transition: all 0.4s; box-shadow: 0 10px 25px rgba(9, 46, 84, 0.2); }
         .btn-brand:hover { transform: translateY(-4px); box-shadow: 0 15px 35px rgba(9, 46, 84, 0.3); color: white; }
         
         .table-custom th { color: var(--nwc-navy); font-weight: 800; padding: 18px 15px; border-bottom: 2px solid var(--nwc-light); }
@@ -484,8 +477,8 @@ function getStatusBadge($status) {
                     </div>
                     <div class="col-6">
                         <div class="bg-white bg-opacity-10 border rounded-3 p-3 text-center text-white">
-                            <h2 class="fw-black m-0 text-warning"><?= count($myProperties); ?></h2>
-                            <small class="fw-bold">العدادات والخدمات</small>
+                            <h2 class="fw-black m-0 text-warning"><?= count($groupedProperties); ?></h2>
+                            <small class="fw-bold">العدادات المفعلة</small>
                         </div>
                     </div>
                 </div>
@@ -610,67 +603,54 @@ function getStatusBadge($status) {
                 <?php endif; ?>
             </div>
 
-            <!-- التبويب 3: العدادات والحسابات المفعّلة الموحدة (توحيد النوافذ لمنع التكرار) -->
+            <!-- التبويب 3: العدادات والحسابات المفعّلة -->
             <div id="tab-properties" class="tab-panel">
-                <div class="card-header-title"><i class="fa-solid fa-building-circle-check"></i> سجل الحسابات والعدادات المفعّلة الموحدة</div>
-                <?php if (empty($myProperties)): ?>
+                <div class="card-header-title"><i class="fa-solid fa-building-circle-check"></i> سجل الحسابات والعدادات المفعّلة</div>
+                <?php if (empty($groupedProperties)): ?>
                     <div class="text-center py-5">
                         <i class="fa-solid fa-satellite-dish fs-1 text-muted mb-3 d-block"></i>
                         <h5 class="fw-bold">لا توجد خدمات نشطة أو عدادات مركبة حتى الآن.</h5>
-                        <p class="text-muted small">بمجرد سداد الفاتورة وإتمام فني التركيبات لعملية التركيب، ستظهر حساباتك وعداداتك هنا آلياً.</p>
+                        <p class="text-muted small">بمجرد سداد الفاتورة وإتمام فني التركيبات لعملية التركيب، ستظهر حساباتك هنا آلياً.</p>
                     </div>
                 <?php else: ?>
                     <div class="row g-3">
-                        <?php foreach ($myProperties as $prop): ?>
+                        <?php foreach ($groupedProperties as $prop): ?>
                             <div class="col-md-6">
                                 <div class="property-box bg-white">
                                     <div class="d-flex justify-content-between align-items-center mb-3">
                                         <h5 class="fw-black text-dark m-0"><i class="fa-solid fa-hotel text-primary me-2"></i> حساب موحد #ACC-<?= str_pad($prop['acc_id'], 5, '0', STR_PAD_LEFT); ?></h5>
-                                        <span class="badge bg-success"><i class="fa-solid fa-check"></i> نشط بالكامل</span>
+                                        <span class="badge bg-success"><i class="fa-solid fa-check"></i> نشط</span>
                                     </div>
                                     <div class="small text-muted mb-3">تاريخ تفعيل الحساب: <?= $prop['creation_date']; ?></div>
-                                    
                                     <div class="border-top pt-3">
                                         <p class="mb-2"><strong>رقم الصك الموثق:</strong> <span class="font-monospace text-muted"><?= htmlspecialchars($prop['deed_no']); ?></span></p>
                                         <p class="mb-2"><strong>المساحة الإجمالية:</strong> <span class="fw-bold text-dark"><?= htmlspecialchars($prop['land_area']); ?> م²</span></p>
                                         <p class="mb-2"><strong>المالك المسجل:</strong> <span class="fw-bold text-dark"><?= htmlspecialchars($prop['owner_name']); ?></span></p>
+                                        <p class="mb-2"><strong>الخدمات المفعّلة:</strong> 
+                                            <?php foreach ($prop['services'] as $srvName): ?>
+                                                <span class="badge bg-light text-primary border"><?= htmlspecialchars($srvName); ?></span>
+                                            <?php endforeach; ?>
+                                        </p>
                                     </div>
-
-                                    <!-- عرض الخدمات والعدادات المرتبطة بشكل منظم وتفصيلي يمنع التكرار -->
+                                    
                                     <div class="bg-light rounded p-3 mt-3 border">
-                                        <div class="fw-bold text-secondary mb-3"><i class="fa-solid fa-screwdriver-wrench text-info me-1"></i> الخدمات والعدادات المربوطة بالعقار:</div>
-                                        <?php if (empty($prop['services'])): ?>
-                                            <div class="text-muted small text-center py-2">لا توجد خدمات مفعلة حالياً بعد.</div>
+                                        <div class="fw-bold text-secondary mb-2"><i class="fa-solid fa-microchip text-success"></i> بيانات العدادات الذكية الميدانية:</div>
+                                        <?php if (empty($prop['meters'])): ?>
+                                            <div class="alert alert-warning text-center fw-bold mt-2 mb-0"><i class="fa-solid fa-spinner fa-spin"></i> جاري تركيب وتفعيل العدادات الميدانية...</div>
                                         <?php else: ?>
                                             <div class="row g-2">
-                                                <?php foreach ($prop['services'] as $srvId => $srvInfo): ?>
-                                                    <div class="col-12 border-bottom pb-2 mb-2 last-no-border">
+                                                <?php foreach ($prop['meters'] as $meter): ?>
+                                                    <div class="col-12 border-bottom pb-2 mb-2" style="border-style: dashed !important;">
                                                         <div class="d-flex justify-content-between align-items-center">
-                                                            <span class="badge bg-primary px-3 py-2 fw-black"><i class="fa-solid fa-tint me-1"></i> خدمة <?= cleanServiceName($srvInfo['srv_name']); ?></span>
-                                                            <?php if ($srvInfo['mtr_serial']): ?>
-                                                                <span class="badge bg-success"><i class="fa-solid fa-circle-check"></i> تم التركيب</span>
-                                                            <?php else: ?>
-                                                                <span class="badge bg-warning text-dark"><i class="fa-solid fa-clock"></i> جاري جدولة التركيب</span>
-                                                            <?php endif; ?>
+                                                            <span class="small text-muted fw-bold">عداد الخدمة: <span class="text-primary"><?= $meter['service'] ?></span></span>
+                                                            <span class="badge bg-info text-dark font-monospace"><?= htmlspecialchars($meter['serial']); ?></span>
                                                         </div>
-                                                        <?php if ($srvInfo['mtr_serial']): ?>
-                                                            <div class="row text-center mt-2 bg-white rounded p-2 mx-1 border">
-                                                                <div class="col-6 border-end">
-                                                                    <div class="small text-muted">رقم العداد</div>
-                                                                    <div class="fw-bold font-monospace text-dark text-truncate" title="<?= htmlspecialchars($srvInfo['mtr_serial']); ?>"><?= htmlspecialchars($srvInfo['mtr_serial']); ?></div>
-                                                                </div>
-                                                                <div class="col-6">
-                                                                    <div class="small text-muted">موديل العداد</div>
-                                                                    <div class="fw-bold text-dark"><?= htmlspecialchars($srvInfo['mtr_type'] == 'Smart' ? 'ذكي (Smart)' : 'ميكانيكي'); ?></div>
-                                                                </div>
-                                                            </div>
-                                                        <?php endif; ?>
+                                                        <div class="small text-muted mt-1">موديل العداد: <?= $meter['type'] == 'Smart' ? 'ذكي' : 'ميكانيكي' ?></div>
                                                     </div>
                                                 <?php endforeach; ?>
                                             </div>
                                         <?php endif; ?>
                                     </div>
-
                                 </div>
                             </div>
                         <?php endforeach; ?>
