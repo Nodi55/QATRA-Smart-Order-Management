@@ -84,7 +84,18 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['submit_new_app'])) {
 
         // رفع ملف الصك وتشفيره لحمايته أمنياً
         $fileTmpPath = $_FILES['deed_file']['tmp_name'];
-        $hashedFileName = md5(time() . $custId) . '.' . pathinfo($_FILES['deed_file']['name'], PATHINFO_EXTENSION);
+        $originalFileName = $_FILES['deed_file']['name'];
+        $fileExtension = strtolower(pathinfo($originalFileName, PATHINFO_EXTENSION));
+
+        // تحديد الامتدادات الآمنة والمسموحة فقط للرفع
+        $allowedExtensions = ['pdf', 'jpg', 'jpeg', 'png'];
+
+        if (!in_array($fileExtension, $allowedExtensions)) {
+            echo json_encode(['status' => 'error', 'message' => 'عفواً، صيغة الملف المرفوع غير مسموحة. الرجاء رفع ملف صك بامتداد PDF أو JPG أو PNG فقط لسلامة المنظومة.']);
+            exit;
+        }
+
+        $hashedFileName = md5(time() . $custId) . '.' . $fileExtension;
         $targetDir = "uploads/";
         if (!is_dir($targetDir)) {
             @mkdir($targetDir, 0777, true);
