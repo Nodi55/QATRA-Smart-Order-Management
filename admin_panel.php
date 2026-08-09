@@ -9,6 +9,21 @@ if (!isset($_SESSION['emp_id']) || !in_array('Admin', $_SESSION['emp_roles'])) {
 require_once 'db_connect.php';
 $msg = ""; $msgType = "";
 
+// =========================================================
+// نظام المزامنة الذكية: لتحديث العداد الفعلي للمهام النشطة فوراً ومنع أي تراكم وهمي
+// =========================================================
+try {
+    $pdo->exec("
+        UPDATE company_employee ce
+        SET ce.active_tasks_count = (
+            (SELECT COUNT(*) FROM field_inspection fi WHERE fi.emp_id = ce.emp_id AND fi.inspection_result IS NULL) +
+            (SELECT COUNT(*) FROM installation_task it WHERE it.emp_id = ce.emp_id AND it.initial_reading IS NULL)
+        )
+    ");
+} catch (Exception $e) {
+    // صامتة في حال لم تكن الجداول مهيأة بعد
+}
+
 // التأكد من وجود الجداول المطلوبة للأعمدة الحيوية والإشعارات
 try {
     $pdo->query("SELECT is_active FROM company_employee LIMIT 1");
@@ -20,7 +35,6 @@ try {
     $pdo->query("SELECT active_tasks_count FROM company_employee LIMIT 1");
 } catch (PDOException $e) {
     $pdo->exec("ALTER TABLE company_employee ADD COLUMN active_tasks_count INT DEFAULT 0");
-    $pdo->exec("UPDATE company_employee SET active_tasks_count = 0 WHERE active_tasks_count IS NULL");
 }
 try {
     $pdo->query("SELECT 1 FROM employee_notification LIMIT 1");
@@ -104,15 +118,30 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
         }
     }
     
-    // 4. إرسال إنذار وتنبيه رسمي للفني/المدقق
+    // 4. إرسال إنذار وتنبيه مخصص حسب نوع المهام المتراكمة (فحص أو تركيب)
     if (isset($_POST['send_warning'])) {
         $target_emp_id = intval($_POST['target_emp_id']);
-        $warningMsg = "إنذار إداري رسمي عاجل: لقد لوحظ تراكم وتأخر في إنجاز المهام المسندة إليك بملفك التشغيلي. يرجى المباشرة بإنجازها فوراً لتجنب المساءلة والجزاءات.";
+        
+        // حساب المهام النشطة لكل دور بدقة متناهية من الجداول الأصلية
+        $pending_inspections = $pdo->query("SELECT COUNT(*) FROM field_inspection WHERE emp_id = $target_emp_id AND inspection_result IS NULL")->fetchColumn();
+        $pending_installations = $pdo->query("SELECT COUNT(*) FROM installation_task WHERE emp_id = $target_emp_id AND initial_reading IS NULL")->fetchColumn();
+        
+        $warningMsg = "إنذار إداري رسمي عاجل: لقد لوحظ تراكم وتأخر في إنجاز المهام المسندة بملفك التشغيلي. ";
+        
+        if ($pending_inspections > 0 && $pending_installations > 0) {
+            $warningMsg .= "لديك ($pending_inspections) مهمة فحص ميداني معلقة، و ($pending_installations) مهمة تركيب عدادات متراكمة بانتظار الإنجاز فوراً.";
+        } elseif ($pending_inspections > 0) {
+            $warningMsg .= "لديك ($pending_inspections) مهمة فحص ميداني متراكمة بانتظار المعاينة وإصدار التقارير.";
+        } elseif ($pending_installations > 0) {
+            $warningMsg .= "لديك ($pending_installations) مهمة تركيب وتفعيل عدادات متراكمة بانتظار العمليات الميدانية.";
+        } else {
+            $warningMsg .= "يرجى المباشرة بإنجاز جميع مهامك المعلقة بأسرع وقت لتجنب المساءلة والجزاءات الإدارية.";
+        }
         
         $stmtWarn = $pdo->prepare("INSERT INTO employee_notification (emp_id, message_content, notif_type) VALUES (?, ?, 'warning')");
         $stmtWarn->execute([$target_emp_id, $warningMsg]);
         
-        $msg = "تم توجيه إنذار رسمي للموظف وتوثيقه فوراً في مركز الإشعارات الخاص به."; $msgType = "success";
+        $msg = "تم توجيه إنذار رسمي مخصص للموظف وتوثيقه فوراً في مركز الإشعارات الخاص به."; $msgType = "success";
     }
     
     // 5. التوزيع الجغرافي الآلي (مهمة جديدة لمدينة مختلفة أو نفس المدينة)
@@ -314,7 +343,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
 
 // جلب البيانات والإحصائيات والتقارير
 $cities = $pdo->query("SELECT * FROM city")->fetchAll(PDO::FETCH_ASSOC);
-$rolesList = $pdo->query("SELECT MIN(role_id) as role_id, role_name FROM system_role WHERE role_name != 'Technician' GROUP BY role_name")->fetchAll(PDO::FETCH_ASSOC);
+$rolesList = $pdo->query("SELECT MIN(role_id) as role_id, role_name FROM system_role GROUP BY role_name")->fetchAll(PDO::FETCH_ASSOC);
 
 function roleLabelAr($roleName) {
     switch ($roleName) {
@@ -517,8 +546,6 @@ Swal.fire({ icon: '<?= $msgType ?>', title: 'إشعار النظام', text: '<?
 });
 </script>
 <?php endif; ?>
-            <?php endif; ?>
-            <?php endif; ?>
 
 <div id="page-stats" class="page-view active">
 <div class="row g-4 mb-4">

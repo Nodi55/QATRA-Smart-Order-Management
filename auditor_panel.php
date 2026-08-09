@@ -12,6 +12,21 @@ require_once 'db_connect.php';
 $msg = ""; $msgType = "";
 $empId = $_SESSION['emp_id'];
 
+// =========================================================
+// نظام المزامنة الذكية: لتحديث العداد الفعلي للمهام النشطة فوراً ومنع أي تراكم وهمي
+// =========================================================
+try {
+    $pdo->exec("
+        UPDATE company_employee ce
+        SET ce.active_tasks_count = (
+            (SELECT COUNT(*) FROM field_inspection fi WHERE fi.emp_id = ce.emp_id AND fi.inspection_result IS NULL) +
+            (SELECT COUNT(*) FROM installation_task it WHERE it.emp_id = ce.emp_id AND it.initial_reading IS NULL)
+        )
+    ");
+} catch (Exception $e) {
+    // صامتة في حال لم تكن الجداول مهيأة بعد
+}
+
 // تهيئة ذكية: تأكيد وجود جدول الإشعارات والتحذيرات للموظفين
 try {
     $pdo->query("SELECT 1 FROM employee_notification LIMIT 1");
@@ -256,7 +271,7 @@ body { font-family: 'Cairo', sans-serif; background-color: var(--bg); margin: 0;
 $isWarning = ($notif['notif_type'] == 'warning');
 $iconClass = $isWarning ? 'fa-triangle-exclamation text-danger' : 'fa-map-location-dot text-info';
 $badgeClass = $isWarning ? 'bg-danger text-white' : 'bg-info text-dark';
-$badgeLabel = $isWarning ? 'إنذار إداري من المدير' : 'مهمة خارج النطاق الجغرافي';
+$badgeLabel = $isWarning ? 'إنذار إداري من المدير' : 'مهمة خارج النطاف الجغرافي';
 ?>
 <div class="p-3 bg-white rounded-3 border d-flex justify-content-between align-items-center mb-2">
 <div class="d-flex align-items-center gap-3">
@@ -321,7 +336,7 @@ $badgeLabel = $isWarning ? 'إنذار إداري من المدير' : 'مهمة
 <td class="font-monospace text-primary fw-bold"><?= htmlspecialchars($app['deed_no']); ?></td>
 <td class="small text-muted fw-bold"><?= $app['created_at']; ?></td>
 <td class="text-center">
-<button class="btn btn-primary btn-sm rounded-pill px-3 fw-bold shadow-sm" onclick="openAuditModal(<?= htmlspecialchars(json_encode($app)); ?>)"><i class="fa-solid fa-magnifying-glass-chart me-1"></i> مراجعة وتدقيق</button>
+<button class="btn btn-primary btn-sm rounded-pill px-3 fw-bold shadow-sm" onclick="openAuditModal(<?= htmlspecialchars(json_encode($app), ENT_QUOTES, 'UTF-8'); ?>)"><i class="fa-solid fa-magnifying-glass-chart me-1"></i> مراجعة وتدقيق</button>
 </td>
 </tr>
 <?php endforeach; ?>
@@ -424,9 +439,9 @@ $decisionText = ($hist['decision'] == 'Rejected') ? 'تم رفضه يدوياً'
 
 <div class="col-lg-6 d-flex flex-column justify-content-between">
 <div>
-<h6 class="fw-bold mb-3 text-secondary"><i class="fa-solid fa-file-pdf me-1"></i> فحص المرفق وصك الملكية المرفوع</h6>
+<h6 class="fw-bold mb-3 text-secondary"><i class="fa-solid fa-file-invoice me-1"></i> فحص المرفق وصك الملكية المرفوع</h6>
 <div class="p-3 border rounded text-center bg-light mb-3" style="border-style: dashed !important; border-radius: 12px;">
-<i class="fa-solid fa-file-invoice text-primary fs-2 mb-1"></i>
+<i class="fa-solid fa-file-lines text-primary fs-2 mb-1"></i>
 <h6 class="fw-bold mb-1">مستند صك الملكية الإلكتروني</h6>
 <a id="deed_file_link" href="#" target="_blank" class="btn btn-outline-primary btn-sm rounded-pill fw-bold"><i class="fa-solid fa-arrow-up-right-from-square me-1"></i> فتح المرفق في نافذة خارجية</a>
 </div>
@@ -468,9 +483,10 @@ document.getElementById(pageId).classList.add('active');
 element.classList.add('active');
 document.getElementById('topbar-title').innerText = element.innerText;
 }
-let auditMap = L.map('auditMap').setView([24.7136, 46.6753], 5);
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© Qatra Smart Systems' }).addTo(auditMap);
-let auditMarker;
+
+// تعديل التهيئة لتجنب الأخطاء البرمجية التراكمية
+let auditMap = null;
+let auditMarker = null;
 
 function openAuditModal(app) {
 document.getElementById('cust_name_val').innerText = app.cust_name;
@@ -520,19 +536,36 @@ document.getElementById('approve_app_id').value = app.app_id;
 document.getElementById('approve_cty_id').value = app.cty_id;
 document.getElementById('reject_app_id').value = app.app_id;
 document.getElementById('rejection_input').value = "";
-let lat = parseFloat(app.latitude) || 24.7136;
-let lng = parseFloat(app.longitude) || 46.6753;
-setTimeout(() => {
-auditMap.invalidateSize();
-auditMap.setView([lat, lng], 15);
-if (auditMarker) {
-auditMarker.setLatLng([lat, lng]);
-} else {
-auditMarker = L.marker([lat, lng]).addTo(auditMap);
-}
-}, 300);
+
+// فتح النافذة أولاً لتأخذ مساحتها التشغيلية
 let myModal = new bootstrap.Modal(document.getElementById('auditModal'));
 myModal.show();
+
+// تهيئة الخريطة فقط بعد إظهار النافذة وبشكل معزول لمنع تجمد الصفحة
+setTimeout(() => {
+    try {
+        let lat = parseFloat(app.latitude) || 24.7136;
+        let lng = parseFloat(app.longitude) || 46.6753;
+        
+        if (!auditMap) {
+            auditMap = L.map('auditMap').setView([lat, lng], 15);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { 
+                attribution: '© Qatra Smart Systems' 
+            }).addTo(auditMap);
+            auditMarker = L.marker([lat, lng]).addTo(auditMap);
+        } else {
+            auditMap.setView([lat, lng], 15);
+            if (auditMarker) {
+                auditMarker.setLatLng([lat, lng]);
+            } else {
+                auditMarker = L.marker([lat, lng]).addTo(auditMap);
+            }
+        }
+        auditMap.invalidateSize(); // تحديث فوري للمقاسات لمنع تداخل أجزاء الخريطة
+    } catch (e) {
+        console.error("Leaflet loading error caught safely: ", e);
+    }
+}, 400);
 }
 
 function confirmRejection(e) {
