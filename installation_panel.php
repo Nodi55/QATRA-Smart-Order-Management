@@ -18,17 +18,17 @@ try {
     $pdo->query("SELECT 1 FROM employee_notification LIMIT 1");
 } catch (Exception $e) {
     $pdo->exec("
-        CREATE TABLE IF NOT EXISTS `employee_notification` (
-            `notif_id` int NOT NULL AUTO_INCREMENT,
-            `emp_id` int NOT NULL,
-            `message_content` text NOT NULL,
-            `created_at` datetime DEFAULT CURRENT_TIMESTAMP,
-            `is_read` tinyint(1) DEFAULT '0',
-            `notif_type` varchar(50) DEFAULT 'info',
-            PRIMARY KEY (`notif_id`),
-            KEY `emp_id` (`emp_id`),
-            CONSTRAINT `employee_notification_ibfk_1` FOREIGN KEY (`emp_id`) REFERENCES `company_employee` (`emp_id`) ON DELETE CASCADE
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+    CREATE TABLE IF NOT EXISTS `employee_notification` (
+    `notif_id` int NOT NULL AUTO_INCREMENT,
+    `emp_id` int NOT NULL,
+    `message_content` text NOT NULL,
+    `created_at` datetime DEFAULT CURRENT_TIMESTAMP,
+    `is_read` tinyint(1) DEFAULT '0',
+    `notif_type` varchar(50) DEFAULT 'info',
+    PRIMARY KEY (`notif_id`),
+    KEY `emp_id` (`emp_id`),
+    CONSTRAINT `employee_notification_ibfk_1` FOREIGN KEY (`emp_id`) REFERENCES `company_employee` (`emp_id`) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
     ");
 }
 
@@ -49,7 +49,6 @@ try {
 } catch (Exception $e) {
     // صامتة
 }
-
 
 // =========================================================
 // معالجة إرسال مهمة التركيب وإغلاق الطلب
@@ -260,13 +259,11 @@ $completedTasks = $stmtCompletedTasks->fetchAll(PDO::FETCH_ASSOC);
         </div>
 
         <div class="content-area">
-            <?php if($msg): ?>
-
             <!-- مركز التنبيهات والإنذارات الإدارية للموظف -->
             <?php if (!empty($empNotifs)): ?>
-                <div class="row mb-4 w-100 px-3">
+                <div class="row mb-4 w-100 mx-auto px-2">
                     <div class="col-12">
-                        <div class="card border-0 shadow-sm rounded-4" style="background: linear-gradient(135deg, #fffbeb 0%, #fff7ed 100%); border-right: 6px solid #f97316 !important;">
+                        <div class="card border-0 shadow-sm rounded-4" style="background: linear-gradient(135deg, #fffbeb 0%, #fff7ed 100%); border-right: 6px solid #f97316 !important; width: 100%;">
                             <div class="card-body p-4">
                                 <div class="d-flex justify-content-between align-items-center mb-3">
                                     <h5 class="fw-black text-warning m-0"><i class="fa-solid fa-bell fa-shake me-2"></i> مركز التنبيهات والإنذارات الإدارية الحرج!</h5>
@@ -279,7 +276,7 @@ $completedTasks = $stmtCompletedTasks->fetchAll(PDO::FETCH_ASSOC);
                                         $badgeClass = $isWarning ? 'bg-danger text-white' : 'bg-info text-dark';
                                         $badgeLabel = $isWarning ? 'إنذار إداري من المدير' : 'مهمة خارج النطاق الجغرافي';
                                     ?>
-                                        <div class="p-3 bg-white rounded-3 border d-flex justify-content-between align-items-center mb-2 w-100">
+                                        <div class="p-3 bg-white rounded-3 border d-flex justify-content-between align-items-center mb-2">
                                             <div class="d-flex align-items-center gap-3">
                                                 <div class="rounded-circle bg-light d-flex align-items-center justify-content-center" style="width: 45px; height: 45px;">
                                                     <i class="fa-solid <?= $iconClass; ?> fs-5"></i>
@@ -300,6 +297,7 @@ $completedTasks = $stmtCompletedTasks->fetchAll(PDO::FETCH_ASSOC);
                 </div>
             <?php endif; ?>
 
+            <?php if($msg): ?>
                 <script>
                     document.addEventListener('DOMContentLoaded', function() {
                         Swal.fire({ icon: '<?= $msgType ?>', title: 'إشعار النظام', text: '<?= $msg ?>', confirmButtonColor: '#0b457f' });
