@@ -12,6 +12,44 @@ if (!isset($_SESSION['emp_id']) || !in_array('Inspection Technician', $_SESSION[
 require_once 'db_connect.php';
 $msg = ""; $msgType = "";
 
+// تهيئة ذكية: تأكيد وجود جدول الإشعارات والتحذيرات للموظفين
+try {
+    $pdo->query("SELECT 1 FROM employee_notification LIMIT 1");
+} catch (Exception $e) {
+    $pdo->exec("
+        CREATE TABLE IF NOT EXISTS `employee_notification` (
+            `notif_id` int NOT NULL AUTO_INCREMENT,
+            `emp_id` int NOT NULL,
+            `message_content` text NOT NULL,
+            `created_at` datetime DEFAULT CURRENT_TIMESTAMP,
+            `is_read` tinyint(1) DEFAULT '0',
+            `notif_type` varchar(50) DEFAULT 'info',
+            PRIMARY KEY (`notif_id`),
+            KEY `emp_id` (`emp_id`),
+            CONSTRAINT `employee_notification_ibfk_1` FOREIGN KEY (`emp_id`) REFERENCES `company_employee` (`emp_id`) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+    ");
+}
+
+// معالجة قراءة إشعارات الموظف
+if (isset($_GET['read_notif'])) {
+    $notifId = intval($_GET['read_notif']);
+    $pdo->prepare("UPDATE employee_notification SET is_read = 1 WHERE notif_id = ? AND emp_id = ?")->execute([$notifId, $empId]);
+    header("Location: inspection_panel.php");
+    exit;
+}
+
+// جلب إشعارات الموظف الحالي غير المقروءة
+$empNotifs = [];
+try {
+    $notifStmt = $pdo->prepare("SELECT * FROM employee_notification WHERE emp_id = ? AND is_read = 0 ORDER BY created_at DESC");
+    $notifStmt->execute([$empId]);
+    $empNotifs = $notifStmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (Exception $e) {
+    // صامتة
+}
+
+
 if (isset($_GET['success_msg'])) {
     $msg = $_GET['success_msg'];
     $msgType = "success";
@@ -29,20 +67,6 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['submit_inspection'])) 
     $doors_windows_installed = isset($_POST['doors_windows_installed']) ? 1 : 0;
     $meter_spot_painted = isset($_POST['meter_spot_painted']) ? 1 : 0;
     $inspection_result = $_POST['inspection_result']; // 'Passed' or 'Failed'
-    $inspect_all = isset($_POST['inspect_all']) ? 1 : 0;
-
-    // ملاحظات الفني الإضافية (اختيارية)
-    $inspector_notes = null;
-    if (isset($_POST['add_notes']) && isset($_POST['inspector_notes']) && trim($_POST['inspector_notes']) !== '') {
-        $inspector_notes = trim($_POST['inspector_notes']);
-    }
-
-    // تهيئة الجدول ليقبل عمود الملاحظات إذا لم يكن موجوداً
-    try {
-        $pdo->query("SELECT inspector_notes FROM field_inspection LIMIT 1");
-    } catch (Exception $e) {
-        $pdo->exec("ALTER TABLE field_inspection ADD COLUMN inspector_notes TEXT NULL");
-    }
 
     $site_photos_url = "";
     
@@ -52,6 +76,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['submit_inspection'])) 
         $fileName = $_FILES['site_photo']['name'];
         $fileExtension = strtolower(pathinfo($fileName, PATHINFO_EXTENSION));
         
+        // تسمية فريدة للصورة لتفادي أي تعارض
         $hashedFileName = md5(time() . $emp_id . $insp_id) . '.' . $fileExtension;
         $targetDir = "uploads/";
         if (!is_dir($targetDir)) {
@@ -74,131 +99,76 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['submit_inspection'])) 
         try {
             $pdo->beginTransaction();
 
-            // جلب معلومات الطلب المحدد
-            $stmtAppDetails = $pdo->prepare("SELECT deed_no, srv_id, cust_id FROM application WHERE app_id = ?");
-            $appDetailsSuccess = $stmtAppDetails->execute([$app_id]);
-            $currentApp = $stmtAppDetails->fetch();
+            // 1. تحديث سجل الفحص الميداني
+            $stmtUpdate = $pdo->prepare("
+                UPDATE field_inspection 
+                SET building_readiness = ?, doors_windows_installed = ?, meter_spot_painted = ?, 
+                    site_photos_url = ?, inspection_result = ? 
+                WHERE insp_id = ?
+            ");
+            $stmtUpdate->execute([$building_readiness, $doors_windows_installed, $meter_spot_painted, $site_photos_url, $inspection_result, $insp_id]);
 
-            if ($currentApp) {
-                $deed_no = $currentApp['deed_no'];
-                $custId = $currentApp['cust_id'];
+            // 2. تحديث الطلب بناءً على النتيجة
+            if ($inspection_result == 'Passed') {
+                // جلب رقم الصك لتحديد مساحة العقار وحساب الفاتورة
+                $stmtApp = $pdo->prepare("SELECT deed_no FROM application WHERE app_id = ?");
+                $stmtApp->execute([$app_id]);
+                $deed_no = $stmtApp->fetchColumn();
 
-                // تحديد قائمة المهام التي سيتم تمريرها
-                $tasksToProcess = [];
-                if ($inspect_all) {
-                    $stmtSearch = $pdo->prepare("
-                        SELECT fi.insp_id, fi.app_id, a.srv_id 
-                        FROM field_inspection fi
-                        JOIN application a ON fi.app_id = a.app_id
-                        WHERE a.deed_no = ? AND fi.emp_id = ? AND fi.inspection_result IS NULL
-                    ");
-                    $stmtSearch->execute([$deed_no, $emp_id]);
-                    $tasksToProcess = $stmtSearch->fetchAll(PDO::FETCH_ASSOC);
+                // جلب المساحة من وزارة العدل
+                $stmtMoj = $pdo->prepare("SELECT land_area FROM moj_record WHERE deed_no = ?");
+                $stmtMoj->execute([$deed_no]);
+                $land_area = $stmtMoj->fetchColumn();
+
+                if (!$land_area) {
+                    $land_area = 500; // قيمة افتراضية احتياطية في حال عدم المطابقة
                 }
 
-                // لو لم يحدد الكل أو لم نجد مهام مترابطة، نكتفي بالمهمة الحالية فقط
-                if (empty($tasksToProcess)) {
-                    $tasksToProcess = [[
-                        'insp_id' => $insp_id,
-                        'app_id' => $app_id,
-                        'srv_id' => $currentApp['srv_id']
-                    ]];
+                // حساب تسعيرة الخدمة حسب المساحة آلياً
+                // مساحة <= 675 -> 3450 ريال
+                // مساحة أكبر من 675 -> المساحة × 10 ريال
+                if ($land_area <= 675) {
+                    $amount = 3450;
+                } else {
+                    $amount = $land_area * 10;
                 }
 
-                foreach ($tasksToProcess as $task) {
-                    $currInspId = $task['insp_id'];
-                    $currAppId = $task['app_id'];
-                    $currSrvId = $task['srv_id'];
+                // إنشاء الفاتورة غير مدفوعة
+                $stmtInvoice = $pdo->prepare("
+                    INSERT INTO invoice (amount, payment_status, app_id) 
+                    VALUES (?, 'Unpaid', ?)
+                    ON DUPLICATE KEY UPDATE amount = ?, payment_status = 'Unpaid'
+                ");
+                $stmtInvoice->execute([$amount, $app_id, $amount]);
 
-                    // 1. تحديث سجل الفحص الميداني
-                    $stmtUpdate = $pdo->prepare("
-                        UPDATE field_inspection 
-                        SET building_readiness = ?, doors_windows_installed = ?, meter_spot_painted = ?, 
-                            site_photos_url = ?, inspection_result = ?, inspector_notes = ?
-                        WHERE insp_id = ?
-                    ");
-                    $stmtUpdate->execute([$building_readiness, $doors_windows_installed, $meter_spot_painted, $site_photos_url, $inspection_result, $inspector_notes, $currInspId]);
+                // تحديث حالة الطلب لانتظار السداد
+                $stmtAppUpdate = $pdo->prepare("UPDATE application SET app_status = 'Pending_Billing' WHERE app_id = ?");
+                $stmtAppUpdate->execute([$app_id]);
 
-                    // 2. تحديث الطلب بناءً على النتيجة
-                    if ($inspection_result == 'Passed') {
-                        // جلب المساحة من وزارة العدل
-                        $stmtMoj = $pdo->prepare("SELECT land_area FROM moj_record WHERE deed_no = ?");
-                        $stmtMoj->execute([$deed_no]);
-                        $land_area = $stmtMoj->fetchColumn();
+                // تسجيل الحركات في الأرشيف والتاريخ
+                $stmtHist = $pdo->prepare("INSERT INTO application_history (app_id, status, changed_by, change_date) VALUES (?, 'Pending_Billing', ?, NOW())");
+                $stmtHist->execute([$app_id, $emp_id]);
 
-                        if (!$land_area) {
-                            $land_area = 500; // قيمة افتراضية احتياطية
-                        }
-
-                        // احتساب السعر بطريقة ذكية وغير مكررة حسب نوع الخدمة
-                        if ($currSrvId == 1) { // شبكة مياه
-                            if ($land_area <= 675) {
-                                $amount = 3450;
-                            } else {
-                                $amount = $land_area * 10;
-                            }
-                        } else if ($currSrvId == 2) { // صرف صحي
-                            // هل هناك خدمة مياه نشطة على نفس الصك للمطابقة؟
-                            $stmtCheckWater = $pdo->prepare("SELECT COUNT(*) FROM application WHERE deed_no = ? AND srv_id = 1 AND app_status != 'Rejected'");
-                            $stmtCheckWater->execute([$deed_no]);
-                            $hasWater = $stmtCheckWater->fetchColumn() > 0;
-
-                            if ($hasWater) {
-                                // الصرف الصحي نصف مبلغ المياه
-                                if ($land_area <= 675) {
-                                    $waterAmount = 3450;
-                                } else {
-                                    $waterAmount = $land_area * 10;
-                                }
-                                $amount = $waterAmount * 0.5;
-                            } else {
-                                // صرف مستقل بـ 3500 ريال
-                                $amount = 3500;
-                            }
-                        } else {
-                            $amount = 3450;
-                        }
-
-                        // إنشاء الفاتورة غير مدفوعة
-                        $stmtInvoice = $pdo->prepare("
-                            INSERT INTO invoice (amount, payment_status, app_id) 
-                            VALUES (?, 'Unpaid', ?)
-                            ON DUPLICATE KEY UPDATE amount = ?, payment_status = 'Unpaid'
-                        ");
-                        $stmtInvoice->execute([$amount, $currAppId, $amount]);
-
-                        // تحديث حالة الطلب لانتظار السداد
-                        $stmtAppUpdate = $pdo->prepare("UPDATE application SET app_status = 'Pending_Billing' WHERE app_id = ?");
-                        $stmtAppUpdate->execute([$currAppId]);
-
-                        // تسجيل الحركات في الأرشيف والتاريخ
-                        $stmtHist = $pdo->prepare("INSERT INTO application_history (app_id, status, changed_by, change_date) VALUES (?, 'Pending_Billing', ?, NOW())");
-                        $stmtHist->execute([$currAppId, $emp_id]);
-
-                    } else {
-                        // في حال رفض الموقع، يتم رفض الطلب يدوياً بالأرشيف الأمني وتوثيق السبب
-                        $stmtAppUpdate = $pdo->prepare("UPDATE application SET app_status = 'Rejected' WHERE app_id = ?");
-                        $stmtAppUpdate->execute([$currAppId]);
-
-                        $stmtHist = $pdo->prepare("
-                            INSERT INTO application_history (app_id, status, rejection_reason, changed_by, change_date) 
-                            VALUES (?, 'Rejected', 'فشل في الفحص الميداني: عدم مطابقة الموقع لاشتراطات البلدية أو عدم جاهزية البناء الميداني للموقع', ?, NOW())
-                        ");
-                        $stmtHist->execute([$currAppId, $emp_id]);
-                    }
-
-                    // 3. تخفيض عدد المهام النشطة للفني
-                    $stmtEmpUpdate = $pdo->prepare("UPDATE company_employee SET active_tasks_count = GREATEST(0, active_tasks_count - 1) WHERE emp_id = ?");
-                    $stmtEmpUpdate->execute([$emp_id]);
-                }
-
-                $pdo->commit();
-                $msg = "تم تقديم تقرير الفحص بنجاح ونقل الطلب للمرحلة التالية بانتظار سداد المشترك.";
-                header("Location: inspection_panel.php?success_msg=" . urlencode($msg));
-                exit;
             } else {
-                throw new Exception("الطلب المختار غير موجود.");
+                // في حال رفض الموقع، يتم رفض الطلب نهائياً بالأرشيف الأمني وتوثيق السبب
+                $stmtAppUpdate = $pdo->prepare("UPDATE application SET app_status = 'Rejected' WHERE app_id = ?");
+                $stmtAppUpdate->execute([$app_id]);
+
+                $stmtHist = $pdo->prepare("
+                    INSERT INTO application_history (app_id, status, rejection_reason, changed_by, change_date) 
+                    VALUES (?, 'Rejected', 'فشل في الفحص الميداني: عدم مطابقة الموقع لاشتراطات البلدية أو عدم جاهزية البناء', ?, NOW())
+                ");
+                $stmtHist->execute([$app_id, $emp_id]);
             }
+
+            // 3. تخفيض عدد المهام النشطة للفني
+            $stmtEmpUpdate = $pdo->prepare("UPDATE company_employee SET active_tasks_count = GREATEST(0, active_tasks_count - 1) WHERE emp_id = ?");
+            $stmtEmpUpdate->execute([$emp_id]);
+
+            $pdo->commit();
+            $msg = "تم تقديم تقرير الفحص بنجاح ونقل الطلب للمرحلة التالية.";
+            header("Location: inspection_panel.php?success_msg=" . urlencode($msg));
+            exit;
 
         } catch (Exception $e) {
             $pdo->rollBack();
@@ -277,6 +247,7 @@ $completedTasks = $stmtHistory->fetchAll(PDO::FETCH_ASSOC);
         .topbar { background: white; padding: 15px 30px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 2px 10px rgba(0,0,0,0.05); z-index: 50; }
         .content-area { flex: 1; display: flex; overflow: hidden; background: var(--bg); }
         
+        /* شاشة العمل المنقسمة لمهام الفني */
         .task-list-column { width: 380px; background: white; border-left: 1px solid #e2e8f0; display: flex; flex-direction: column; overflow-y: auto; }
         .workspace-column { flex: 1; display: flex; flex-direction: column; overflow-y: auto; padding: 30px; }
         
@@ -302,11 +273,13 @@ $completedTasks = $stmtHistory->fetchAll(PDO::FETCH_ASSOC);
         .page-view.active { display: flex; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
         
+        /* تجميل شاشة الرفع وصور المعاينة */
         #photo-preview { max-height: 180px; border-radius: 10px; margin-top: 15px; display: none; }
     </style>
 </head>
 <body>
 
+    <!-- القائمة الجانبية الفاخرة -->
     <div class="sidebar">
         <div class="sidebar-header">
             <i class="fa-solid fa-helmet-safety"></i>
@@ -322,6 +295,7 @@ $completedTasks = $stmtHistory->fetchAll(PDO::FETCH_ASSOC);
         </div>
     </div>
 
+    <!-- المحتوى الرئيسي للمشغل -->
     <div class="main-wrapper">
         <div class="topbar">
             <div><h4 class="fw-black text-dark m-0" id="topbar-title">المهام الميدانية النشطة</h4></div>
@@ -333,6 +307,45 @@ $completedTasks = $stmtHistory->fetchAll(PDO::FETCH_ASSOC);
 
         <div class="content-area">
             <?php if ($msg): ?>
+
+            <!-- مركز التنبيهات والإنذارات الإدارية للموظف -->
+            <?php if (!empty($empNotifs)): ?>
+                <div class="row mb-4 w-100 px-3">
+                    <div class="col-12">
+                        <div class="card border-0 shadow-sm rounded-4" style="background: linear-gradient(135deg, #fffbeb 0%, #fff7ed 100%); border-right: 6px solid #f97316 !important;">
+                            <div class="card-body p-4">
+                                <div class="d-flex justify-content-between align-items-center mb-3">
+                                    <h5 class="fw-black text-warning m-0"><i class="fa-solid fa-bell fa-shake me-2"></i> مركز التنبيهات والإنذارات الإدارية الحرج!</h5>
+                                    <span class="badge bg-warning text-dark px-3 py-2 fw-bold"><?= count($empNotifs); ?> تنبيهات معلقة</span>
+                                </div>
+                                <div class="space-y-3">
+                                    <?php foreach ($empNotifs as $notif): 
+                                        $isWarning = ($notif['notif_type'] == 'warning');
+                                        $iconClass = $isWarning ? 'fa-triangle-exclamation text-danger' : 'fa-map-location-dot text-info';
+                                        $badgeClass = $isWarning ? 'bg-danger text-white' : 'bg-info text-dark';
+                                        $badgeLabel = $isWarning ? 'إنذار إداري من المدير' : 'مهمة خارج النطاق الجغرافي';
+                                    ?>
+                                        <div class="p-3 bg-white rounded-3 border d-flex justify-content-between align-items-center mb-2 w-100">
+                                            <div class="d-flex align-items-center gap-3">
+                                                <div class="rounded-circle bg-light d-flex align-items-center justify-content-center" style="width: 45px; height: 45px;">
+                                                    <i class="fa-solid <?= $iconClass; ?> fs-5"></i>
+                                                </div>
+                                                <div class="text-start">
+                                                    <span class="badge <?= $badgeClass; ?> fw-bold mb-1" style="font-size: 0.75rem;"><?= $badgeLabel; ?></span>
+                                                    <p class="m-0 fw-bold text-dark" style="font-size: 0.95rem;"><?= htmlspecialchars($notif['message_content']); ?></p>
+                                                    <small class="text-muted small"><i class="fa-regular fa-clock me-1"></i> <?= $notif['created_at']; ?></small>
+                                                </div>
+                                            </div>
+                                            <a href="?read_notif=<?= $notif['notif_id']; ?>" class="btn btn-sm btn-outline-secondary rounded-pill fw-bold"><i class="fa-solid fa-check me-1"></i> تحديد كمقروء</a>
+                                        </div>
+                                    <?php endforeach; ?>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            <?php endif; ?>
+
                 <script>
                     document.addEventListener('DOMContentLoaded', function() {
                         Swal.fire({ icon: '<?= $msgType ?>', title: 'إشعار الميدان', text: '<?= $msg ?>', confirmButtonColor: '#0b457f' });
@@ -340,8 +353,10 @@ $completedTasks = $stmtHistory->fetchAll(PDO::FETCH_ASSOC);
                 </script>
             <?php endif; ?>
 
+            <!-- صفحة المهام النشطة مع واجهة SPA الفاخرة -->
             <div id="page-tasks-view" class="page-view active">
                 
+                <!-- عمود قائمة المهام الجانبية -->
                 <div class="task-list-column">
                     <div class="p-3 bg-light border-bottom fw-bold text-secondary text-center">المهام المعلقة في مدينتك</div>
                     <?php if (empty($activeTasks)): ?>
@@ -368,6 +383,7 @@ $completedTasks = $stmtHistory->fetchAll(PDO::FETCH_ASSOC);
                     <?php endif; ?>
                 </div>
 
+                <!-- مساحة عمل إعداد الفحص ورفع التقارير -->
                 <div class="workspace-column" id="workspace-column">
                     <div id="no-task-selected" class="text-center my-auto py-5">
                         <i class="fa-solid fa-clipboard-check fs-1 text-muted opacity-50 mb-3" style="font-size: 5rem !important;"></i>
@@ -377,6 +393,7 @@ $completedTasks = $stmtHistory->fetchAll(PDO::FETCH_ASSOC);
 
                     <div id="task-workspace" style="display: none;">
                         <div class="row g-4">
+                            <!-- الجزء الأيمن: الخريطة ومعلومات الموقع العقاري -->
                             <div class="col-lg-6">
                                 <div class="premium-card h-100">
                                     <div class="card-title"><i class="fa-solid fa-map-location-dot text-primary"></i> موقع العقار والاتجاهات</div>
@@ -395,16 +412,17 @@ $completedTasks = $stmtHistory->fetchAll(PDO::FETCH_ASSOC);
                                 </div>
                             </div>
 
+                            <!-- الجزء الأيسر: نموذج التحقق والتقرير الفني -->
                             <div class="col-lg-6">
                                 <div class="premium-card">
                                     <div class="card-title text-success"><i class="fa-solid fa-square-poll-horizontal"></i> استمارة الجاهزية والرفع الميداني</div>
                                     
                                     <form method="POST" enctype="multipart/form-data" id="inspectionForm">
-                                        <input type="hidden" name="submit_inspection" value="1">
                                         <input type="hidden" name="insp_id" id="form-insp-id">
                                         <input type="hidden" name="app_id" id="form-app-id">
                                         <input type="hidden" name="inspection_result" id="form-result" value="Passed">
 
+                                        <!-- بند جاهزية البناء -->
                                         <div class="requirement-row">
                                             <div class="d-flex align-items-center gap-3">
                                                 <i class="fa-solid fa-building text-primary fs-4"></i>
@@ -418,6 +436,7 @@ $completedTasks = $stmtHistory->fetchAll(PDO::FETCH_ASSOC);
                                             </div>
                                         </div>
 
+                                        <!-- بند تركيب الأبواب والشبابيك -->
                                         <div class="requirement-row">
                                             <div class="d-flex align-items-center gap-3">
                                                 <i class="fa-solid fa-door-closed text-primary fs-4"></i>
@@ -431,6 +450,7 @@ $completedTasks = $stmtHistory->fetchAll(PDO::FETCH_ASSOC);
                                             </div>
                                         </div>
 
+                                        <!-- بند طلاء موقع العداد -->
                                         <div class="requirement-row">
                                             <div class="d-flex align-items-center gap-3">
                                                 <i class="fa-solid fa-paint-roller text-primary fs-4"></i>
@@ -444,6 +464,7 @@ $completedTasks = $stmtHistory->fetchAll(PDO::FETCH_ASSOC);
                                             </div>
                                         </div>
 
+                                        <!-- إرفاق الصورة الميدانية لإثبات الفحص -->
                                         <div class="mb-4">
                                             <label class="fw-bold text-dark mb-2"><i class="fa-solid fa-camera text-primary me-1"></i> إرفاق صورة حية لإثبات الفحص الميداني <span class="text-danger">*</span></label>
                                             <div class="upload-area" onclick="document.getElementById('site-photo-file').click()">
@@ -455,24 +476,7 @@ $completedTasks = $stmtHistory->fetchAll(PDO::FETCH_ASSOC);
                                             </div>
                                         </div>
 
-                                        <div class="mb-4">
-                                            <div class="form-check mb-2">
-                                                <input class="form-check-input" type="checkbox" name="add_notes" id="add_notes_check" onchange="toggleNotes(this)">
-                                                <label class="form-check-label fw-bold text-dark" for="add_notes_check">
-                                                    <i class="fa-solid fa-note-sticky text-primary me-1"></i> إضافة ملاحظات ميدانية إضافية (اختياري)
-                                                </label>
-                                            </div>
-                                            <textarea name="inspector_notes" id="inspector_notes_field" class="form-control" rows="3" placeholder="اكتب هنا أي ملاحظات إضافية عن حالة الموقع أو العقار..." style="display:none;"></textarea>
-                                        </div>
-
-                                        <!-- تفعيل قرار الفحص والفوترة المجمعة -->
-                                        <div class="form-check mb-4 text-end">
-                                            <input class="form-check-input float-end ms-2" type="checkbox" name="inspect_all" id="inspect_all" value="1" checked>
-                                            <label class="form-check-label fw-bold text-primary" for="inspect_all">
-                                                تطبيق القرار والصورة على كافة خدمات هذا العقار (مياه وصرف) المزدوجة المعلقة معاً دفعة واحدة
-                                            </label>
-                                        </div>
-
+                                        <!-- قرار الاعتماد الميداني النهائي -->
                                         <div class="mb-4 text-center">
                                             <label class="fw-black text-dark mb-3 d-block"><i class="fa-solid fa-circle-question text-info me-1"></i> قرار الاعتماد الفني النهائي ومطابقة المعايير:</label>
                                             <div class="btn-group w-100" role="group">
@@ -485,7 +489,7 @@ $completedTasks = $stmtHistory->fetchAll(PDO::FETCH_ASSOC);
                                             </div>
                                         </div>
 
-                                        <button type="submit" name="submit_inspection_btn" class="btn-brand w-100 py-3 rounded-3 shadow-sm" onclick="confirmInspection(event)">
+                                        <button type="submit" name="submit_inspection" class="btn-brand w-100 py-3 rounded-3 shadow-sm" onclick="confirmInspection(event)">
                                             <i class="fa-solid fa-paper-plane me-1"></i> إرسال التقرير واعتماد القرار للخدمة
                                         </button>
                                     </form>
@@ -497,9 +501,10 @@ $completedTasks = $stmtHistory->fetchAll(PDO::FETCH_ASSOC);
 
             </div>
 
+            <!-- صفحة سجل المهام المكتملة للتاريخ -->
             <div id="page-history-view" class="page-view">
                 <div class="workspace-column w-100 h-100">
-                    <div class="admin-card w-100 bg-white p-4 border rounded-3">
+                    <div class="admin-card w-100">
                         <div class="card-title text-success"><i class="fa-solid fa-history bg-success text-white rounded p-2"></i> أرشيف وسجل المهام المنجزة للموظف</div>
                         <div class="table-responsive">
                             <table class="table table-hover">
@@ -511,12 +516,11 @@ $completedTasks = $stmtHistory->fetchAll(PDO::FETCH_ASSOC);
                                         <th>معايير الجاهزية الميدانية المسجلة</th>
                                         <th>إثبات الفحص</th>
                                         <th>القرار الفني النهائي</th>
-                                        <th>التقرير</th>
                                     </tr>
                                 </thead>
                                 <tbody>
                                     <?php if(empty($completedTasks)): ?>
-                                        <tr><td colspan="7" class="text-center py-5 text-muted fw-bold">لم تقم بإتمام أي فحص ميداني بعد.</td></tr>
+                                        <tr><td colspan="6" class="text-center py-5 text-muted fw-bold">لم تقم بإتمام أي فحص ميداني بعد.</td></tr>
                                     <?php else: ?>
                                         <?php foreach($completedTasks as $history): ?>
                                             <tr>
@@ -541,11 +545,6 @@ $completedTasks = $stmtHistory->fetchAll(PDO::FETCH_ASSOC);
                                                         '<span class="badge bg-danger rounded-pill px-3 py-2"><i class="fa-solid fa-circle-xmark"></i> غير مطابق ومرفوض</span>' 
                                                     ?>
                                                 </td>
-                                                <td>
-                                                    <a href="inspection_report.php?insp_id=<?= $history['insp_id']; ?>" target="_blank" class="btn btn-sm btn-outline-primary rounded-pill fw-bold">
-                                                        <i class="fa-solid fa-file-lines me-1"></i> عرض التقرير
-                                                    </a>
-                                                </td>
                                             </tr>
                                         <?php endforeach; ?>
                                     <?php endif; ?>
@@ -559,10 +558,12 @@ $completedTasks = $stmtHistory->fetchAll(PDO::FETCH_ASSOC);
         </div>
     </div>
 
+    <!-- برمجة التفاعلات الذكية والخريطة الجغرافية -->
     <script>
         let map;
         let marker;
 
+        // إعداد خريطة Leaflet الافتراضية
         function initMap(lat, lng) {
             if (!map) {
                 map = L.map('propertyMap').setView([lat, lng], 15);
@@ -577,6 +578,7 @@ $completedTasks = $stmtHistory->fetchAll(PDO::FETCH_ASSOC);
             setTimeout(() => { map.invalidateSize(); }, 300);
         }
 
+        // تحديد واختيار مهمة معينة وعرض تفاصيلها آلياً
         function selectTask(task) {
             document.querySelectorAll('.task-card').forEach(c => c.classList.remove('active'));
             document.getElementById('task-card-' + task.insp_id).classList.add('active');
@@ -584,15 +586,19 @@ $completedTasks = $stmtHistory->fetchAll(PDO::FETCH_ASSOC);
             document.getElementById('no-task-selected').style.display = 'none';
             document.getElementById('task-workspace').style.display = 'block';
             
+            // تعبئة بيانات استمارة التقرير
             document.getElementById('form-insp-id').value = task.insp_id;
             document.getElementById('form-app-id').value = task.app_id;
             
+            // إعداد رابط الملاحة والخرائط
             const mapUrl = `https://www.google.com/maps/dir/?api=1&destination=${task.latitude},${task.longitude}`;
             document.getElementById('google-maps-btn').href = mapUrl;
 
+            // تهيئة الخريطة بـ الإحداثيات الفعلية للطلب المعين
             initMap(task.latitude, task.longitude);
         }
 
+        // معاينة الصورة المرفوعة من قبل الفني بشكل فوري ومباشر
         function previewImage(input) {
             const preview = document.getElementById('photo-preview');
             const label = document.getElementById('upload-label');
@@ -607,17 +613,7 @@ $completedTasks = $stmtHistory->fetchAll(PDO::FETCH_ASSOC);
             }
         }
 
-        function toggleNotes(checkbox) {
-            const field = document.getElementById('inspector_notes_field');
-            if (checkbox.checked) {
-                field.style.display = 'block';
-                field.focus();
-            } else {
-                field.style.display = 'none';
-                field.value = '';
-            }
-        }
-
+        // تحديد نتيجة الفحص النهائي
         function setResult(res) {
             document.getElementById('form-result').value = res;
             if (res === 'Passed') {
@@ -629,13 +625,14 @@ $completedTasks = $stmtHistory->fetchAll(PDO::FETCH_ASSOC);
             }
         }
 
+        // تأكيد إرسال التقرير بـ SweetAlert
         function confirmInspection(e) {
             e.preventDefault();
             const res = document.getElementById('form-result').value;
             const titleText = (res === 'Passed') ? "تأكيد جاهزية وتمرير الطلب؟" : "تأكيد رفض وتجميد الطلب الميداني؟";
             const bodyText = (res === 'Passed') ? 
-                "بموافقتك سيتم حساب الفاتورة وتفعيل السداد للمستفيد بنجاح." : 
-                "بموافقتك سيتم تسجيل الرفض الميداني وحفظ الأسباب بالأرشيف.";
+                "بموافقتك سيتم حساب الفاتورة آلياً وإرسال إشعار السداد للعميل." : 
+                "بموافقتك سيتم تسجيل الرفض وحفظ الأسباب بالأرشيف الأمني.";
 
             Swal.fire({
                 title: titleText,
@@ -653,6 +650,7 @@ $completedTasks = $stmtHistory->fetchAll(PDO::FETCH_ASSOC);
             });
         }
 
+        // عرض صورة الفحص المنجز في سجل التاريخ
         function viewPhoto(url) {
             Swal.fire({
                 title: 'إثبات الفحص الميداني الموثق',
@@ -663,6 +661,7 @@ $completedTasks = $stmtHistory->fetchAll(PDO::FETCH_ASSOC);
             });
         }
 
+        // التنقل بين صفحات الواجهة
         function openPage(pageId, element) {
             document.querySelectorAll('.page-view').forEach(p => p.classList.remove('active'));
             document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
