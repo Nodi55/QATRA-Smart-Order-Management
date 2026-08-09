@@ -73,15 +73,22 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['submit_new_app'])) {
             exit;
         }
 
-        // مطابقة الهوية الوطنية للعميل مع مالك الصك في وزارة العدل
-        if ($mojRecord['owner_national_id'] !== $nationalId) {
-            $appStatus = 'Pending_Review';
-            $notifMsg = "تم تقديم طلبك بنجاح، وتحويله للمدقق لمطابقة اختلاف بيانات المالك.";
-        } else {
-            $appStatus = 'Pending_Inspection';
-            $notifMsg = "تهانينا! تم التحقق من صك الملكية آلياً بنجاح عبر محرك (DSS). تم توجيه طلبك مباشرة إلى مرحلة الفحص الميداني.";
-        }
+        // =========================================================
+// بوابة DSS الأمنية: مطابقة ثنائية صارمة (الهوية الوطنية + الاسم الرباعي)
+// لمنع التزوير وتحويل أي اختلاف في الاسم أو الهوية للمدقق يدوياً
+// =========================================================
+$dbCustomerName = trim($customer['full_name']);
+$mojOwnerName = trim($mojRecord['owner_name']);
 
+if ($mojRecord['owner_national_id'] !== $nationalId || $dbCustomerName !== $mojOwnerName) {
+    // في حال اختلاف الهوية أو وجود أي اختلاف في الاسم (حتى لو حرف واحد)
+    $appStatus = 'Pending_Review';
+    $notifMsg = "تم تقديم طلبك بنجاح، وتحويله للمدقق لمطابقة اختلاف بيانات المالك.";
+} else {
+    // مطابقة كاملة 100% للهوية والاسم
+    $appStatus = 'Pending_Inspection';
+    $notifMsg = "تهانينا! تم التحقق من صك الملكية آلياً بنجاح عبر محرك (DSS). تم توجيه طلبك مباشرة إلى مرحلة الفحص الميداني.";
+}
         // رفع ملف الصك وتشفيره لحمايته أمنياً
         $fileTmpPath = $_FILES['deed_file']['tmp_name'];
         $originalFileName = $_FILES['deed_file']['name'];
