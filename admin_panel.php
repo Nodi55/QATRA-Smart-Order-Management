@@ -30,6 +30,9 @@ try {
     $pdo->exec("UPDATE company_employee SET active_tasks_count = 0 WHERE active_tasks_count IS NULL");
 }
 
+// عتبة اعتبار الموظف "متراكم المهام" - تم رفعها من 3 إلى 8 مهام نشطة
+define('OVERLOAD_THRESHOLD', 8);
+
 // =========================================================
 // معالجة العمليات (إضافة، تعديل، إيقاف، التوزيع الجغرافي واليدوي)
 // =========================================================
@@ -86,7 +89,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
         $msg = "تم إرسال إنذار رسمي للموظف المتأخر."; $msgType = "success";
     }
 
-    // 5. التوزيع الجغرافي الإقليمي الآلي
+    // 5. التوزيع الجغرافي الإقليمي الآلي (لطلب واحد)
     if (isset($_POST['dispatch_unassigned'])) {
         $appId = $_POST['app_id']; $cityId = $_POST['cty_id']; $reqRole = $_POST['req_role']; 
         $bestTechStmt = $pdo->prepare("
@@ -107,6 +110,49 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
             $msg = "تم التوزيع الآلي بنجاح! أسندت المهمة لفني " . $locationNote . "."; $msgType = "success";
         } else { 
             $msg = "تنبيه: لم يعثر النظام على أي فني متاح في المنطقة. الرجاء إسناد المهمة يدوياً."; $msgType = "warning"; 
+        }
+    }
+
+    // 5-ب. التوزيع الجغرافي الآلي لكل المهام غير المسندة دفعة واحدة
+    if (isset($_POST['dispatch_all_unassigned'])) {
+        $tasksToDispatch = $pdo->query("
+            SELECT a.app_id, a.app_status, a.cty_id
+            FROM application a
+            LEFT JOIN field_inspection fi ON a.app_id = fi.app_id
+            WHERE (a.app_status = 'Pending_Inspection' AND fi.insp_id IS NULL)
+        ")->fetchAll(PDO::FETCH_ASSOC);
+
+        $successCount = 0; $failCount = 0;
+        foreach ($tasksToDispatch as $t) {
+            $reqRole = ($t['app_status'] == 'Pending_Inspection') ? 'Inspection Technician' : 'Installation Technician';
+            $bestTechStmt = $pdo->prepare("
+                SELECT ce.emp_id, ce.cty_id, c.cty_name 
+                FROM company_employee ce
+                JOIN employee_roles er ON ce.emp_id = er.emp_id JOIN system_role sr ON er.role_id = sr.role_id JOIN city c ON ce.cty_id = c.cty_id
+                WHERE ce.is_active = 1 AND sr.role_name = ? AND c.reg_id = (SELECT reg_id FROM city WHERE cty_id = ?)
+                ORDER BY (ce.cty_id = ?) DESC, ce.active_tasks_count ASC LIMIT 1
+            ");
+            $bestTechStmt->execute([$reqRole, $t['cty_id'], $t['cty_id']]);
+            $assigned = $bestTechStmt->fetch();
+
+            if ($assigned) {
+                if ($reqRole == 'Inspection Technician') { $pdo->prepare("INSERT INTO field_inspection (app_id, emp_id) VALUES (?, ?)")->execute([$t['app_id'], $assigned['emp_id']]); }
+                else { $pdo->prepare("INSERT INTO installation_task (app_id, emp_id) VALUES (?, ?)")->execute([$t['app_id'], $assigned['emp_id']]); }
+                $pdo->prepare("UPDATE company_employee SET active_tasks_count = active_tasks_count + 1 WHERE emp_id = ?")->execute([$assigned['emp_id']]);
+                $successCount++;
+            } else {
+                $failCount++;
+            }
+        }
+
+        if ($successCount > 0 && $failCount == 0) {
+            $msg = "تم إسناد جميع المهام غير المسندة آلياً بنجاح (" . $successCount . " مهمة)."; $msgType = "success";
+        } elseif ($successCount > 0 && $failCount > 0) {
+            $msg = "تم إسناد " . $successCount . " مهمة بنجاح، بينما تعذر إيجاد فني متاح لـ " . $failCount . " مهمة. يمكنك إسنادها يدوياً."; $msgType = "warning";
+        } elseif ($successCount == 0 && $failCount > 0) {
+            $msg = "تعذر إسناد أي مهمة آلياً، لا يوجد فنيون متاحون حالياً. الرجاء الإسناد اليدوي."; $msgType = "warning";
+        } else {
+            $msg = "لا توجد أي مهام غير مسندة حالياً."; $msgType = "success";
         }
     }
 
@@ -173,6 +219,19 @@ function roleLabelAr($roleName) {
     }
 }
 
+// دالة موحّدة لتسمية حالة الطلب بالعربي (تُستخدم في تقارير الطلبات)
+function appStatusLabelAr($status) {
+    $map = [
+        'Pending_Review'     => 'قيد المراجعة',
+        'Pending_Inspection' => 'بانتظار الفحص',
+        'Pending_Billing'    => 'بانتظار السداد',
+        'In_Progress'        => 'جاري التركيب',
+        'Completed'          => 'مكتمل',
+        'Rejected'           => 'مرفوض'
+    ];
+    return $map[$status] ?? $status;
+}
+
 // إحصائيات عامة للنظام
 $totalApps = $pdo->query("SELECT COUNT(*) FROM application")->fetchColumn();
 $completedApps = $pdo->query("SELECT COUNT(*) FROM application WHERE app_status = 'Completed'")->fetchColumn();
@@ -207,7 +266,8 @@ $detailedPerformance = $pdo->query("
     GROUP BY ce.emp_id
 ")->fetchAll(PDO::FETCH_ASSOC);
 
-$overloadedEmps = array_filter($detailedPerformance, function($e) { return $e['active_tasks_count'] >= 3; });
+// الموظفون ذوو المهام المتراكمة (العتبة الآن 8 مهام نشطة بدل 3)
+$overloadedEmps = array_filter($detailedPerformance, function($e) { return $e['active_tasks_count'] >= OVERLOAD_THRESHOLD; });
 
 // المهام غير المسندة (التي فشل النظام في توزيعها)
 $unassignedTasks = $pdo->query("
@@ -235,6 +295,73 @@ $rejectedApps = $pdo->query("
     WHERE ah.status = 'Rejected' OR a.app_status = 'Rejected' ORDER BY ah.change_date DESC LIMIT 20
 ")->fetchAll(PDO::FETCH_ASSOC);
 
+// =========================================================
+// تقارير الطلبات والموظفين الشاملة (صفحة التقارير الجديدة)
+// =========================================================
+
+// 1) توزيع الطلبات حسب الحالة التشغيلية
+$appsByStatus = $pdo->query("
+    SELECT app_status, COUNT(*) as cnt FROM application GROUP BY app_status ORDER BY cnt DESC
+")->fetchAll(PDO::FETCH_ASSOC);
+$maxStatusCnt = 1;
+foreach ($appsByStatus as $s) { $maxStatusCnt = max($maxStatusCnt, $s['cnt']); }
+
+// 2) توزيع الطلبات حسب نوع الخدمة
+$appsByService = $pdo->query("
+    SELECT s.srv_name, COUNT(*) as cnt
+    FROM application a JOIN service_type s ON a.srv_id = s.srv_id
+    GROUP BY s.srv_name ORDER BY cnt DESC
+")->fetchAll(PDO::FETCH_ASSOC);
+$maxServiceCnt = 1;
+foreach ($appsByService as $s) { $maxServiceCnt = max($maxServiceCnt, $s['cnt']); }
+
+// 3) أكثر 5 مدن من حيث عدد الطلبات
+$appsByCity = $pdo->query("
+    SELECT c.cty_name, COUNT(*) as cnt
+    FROM application a JOIN city c ON a.cty_id = c.cty_id
+    GROUP BY c.cty_name ORDER BY cnt DESC LIMIT 5
+")->fetchAll(PDO::FETCH_ASSOC);
+$maxCityCnt = 1;
+foreach ($appsByCity as $s) { $maxCityCnt = max($maxCityCnt, $s['cnt']); }
+
+// 4) إحصائية الرفض: رفض آلي عبر محرك DSS مقابل رفض بشري من قبل مدقق
+$rejectedAutoCount = $pdo->query("
+    SELECT COUNT(*) FROM application_history WHERE status = 'Rejected' AND changed_by IS NULL
+")->fetchColumn();
+$rejectedManualCount = $pdo->query("
+    SELECT COUNT(*) FROM application_history WHERE status = 'Rejected' AND changed_by IS NOT NULL
+")->fetchColumn();
+$totalRejected = $rejectedAutoCount + $rejectedManualCount;
+if ($totalRejected == 0) {
+    // لو الحالة الحالية للطلب هي المصدر الوحيد للرفض (بدون سجل تاريخ)، نعتمد على العدد الكلي
+    $totalRejected = $pdo->query("SELECT COUNT(*) FROM application WHERE app_status = 'Rejected'")->fetchColumn();
+}
+
+// 5) معدل الإنجاز الزمني: عدد الطلبات المسجلة آخر 30 يوماً
+$appsLast30Days = $pdo->query("
+    SELECT COUNT(*) FROM application WHERE created_at >= (NOW() - INTERVAL 30 DAY)
+")->fetchColumn();
+
+// 6) إحصائيات الموظفين الشاملة
+$empTotalCount = count($employeesData);
+$empActiveCount = 0; $empInactiveCount = 0;
+foreach ($employeesData as $e) { $e['is_active'] ? $empActiveCount++ : $empInactiveCount++; }
+
+$empByRole = $pdo->query("
+    SELECT sr.role_name, COUNT(DISTINCT er.emp_id) as cnt
+    FROM employee_roles er JOIN system_role sr ON er.role_id = sr.role_id
+    GROUP BY sr.role_name ORDER BY cnt DESC
+")->fetchAll(PDO::FETCH_ASSOC);
+
+// 7) أكثر 5 موظفين إنجازاً (فحص + تركيب + تدقيق)
+$topPerformers = $detailedPerformance;
+usort($topPerformers, function($a, $b) {
+    $totalA = $a['fi_completed'] + $a['it_completed'] + $a['audits_completed'];
+    $totalB = $b['fi_completed'] + $b['it_completed'] + $b['audits_completed'];
+    return $totalB - $totalA;
+});
+$topPerformers = array_slice($topPerformers, 0, 5);
+
 ?>
 
 <!DOCTYPE html>
@@ -254,7 +381,9 @@ $rejectedApps = $pdo->query("
         .sidebar-header { padding: 30px 20px; text-align: center; border-bottom: 1px solid rgba(255,255,255,0.1); }
         .sidebar-header i { font-size: 2.5rem; color: #7dd3fc; margin-bottom: 10px; }
         .sidebar-nav { flex: 1; padding: 20px 0; overflow-y: auto; }
-        .nav-item { padding: 15px 25px; color: #cbd5e1; display: flex; align-items: center; gap: 15px; text-decoration: none; font-weight: 700; transition: 0.3s; cursor: pointer; border-right: 4px solid transparent; }
+        .nav-item { padding: 15px 25px; color: #cbd5e1; display: flex; align-items: center; gap: 15px; text-decoration: none; font-weight: 700; transition: 0.3s; cursor: pointer; border-right: 4px solid transparent; white-space: nowrap; }
+        .nav-item i { flex-shrink: 0; width: 20px; text-align: center; }
+        .nav-item span.nav-text { overflow: hidden; text-overflow: ellipsis; }
         .nav-item:hover, .nav-item.active { background: rgba(255,255,255,0.05); color: white; border-right-color: #7dd3fc; }
         
         .main-wrapper { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
@@ -273,6 +402,15 @@ $rejectedApps = $pdo->query("
         
         .btn-brand { background: var(--blue); color: white; border: none; padding: 12px 20px; border-radius: 10px; font-weight: 800; width: 100%; transition: 0.3s; }
         .btn-brand:hover { background: var(--navy); color: white; }
+
+        .mini-stat { background: white; border-radius: 14px; padding: 18px 20px; border: 1px solid #e2e8f0; text-align: center; }
+        .mini-stat h3 { font-weight: 900; margin: 0; }
+        .mini-stat p { margin: 4px 0 0; color: #64748b; font-weight: 700; font-size: 0.85rem; }
+
+        .bar-row { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+        .bar-label { width: 150px; flex-shrink: 0; font-weight: 800; color: #334155; font-size: 0.9rem; }
+        .bar-track { flex: 1; background: #f1f5f9; border-radius: 8px; height: 22px; overflow: hidden; position: relative; }
+        .bar-fill { height: 100%; border-radius: 8px; display: flex; align-items: center; justify-content: flex-end; padding: 0 10px; color: white; font-weight: 800; font-size: 0.8rem; transition: width 0.6s ease; white-space: nowrap; }
     </style>
 </head>
 <body>
@@ -284,14 +422,15 @@ $rejectedApps = $pdo->query("
             <div class="small mt-1 text-info">الرقابة والتشغيل الذكي</div>
         </div>
         <div class="sidebar-nav">
-            <a class="nav-item active" onclick="openPage('page-stats', this)"><i class="fa-solid fa-chart-pie"></i> نظرة عامة</a>
-            <a class="nav-item" onclick="openPage('page-performance', this)"><i class="fa-solid fa-ranking-star"></i> تقارير أداء الموظفين</a>
+            <a class="nav-item active" onclick="openPage('page-stats', this)"><i class="fa-solid fa-chart-pie"></i><span class="nav-text">نظرة عامة</span></a>
+            <a class="nav-item" onclick="openPage('page-reports', this)"><i class="fa-solid fa-chart-column"></i><span class="nav-text">تقارير الطلبات</span></a>
+            <a class="nav-item" onclick="openPage('page-performance', this)"><i class="fa-solid fa-ranking-star"></i><span class="nav-text">تقارير الأداء</span></a>
             <a class="nav-item" onclick="openPage('page-alerts', this)">
-                <i class="fa-solid fa-triangle-exclamation"></i> مهام وتوجيه 
+                <i class="fa-solid fa-triangle-exclamation"></i><span class="nav-text">مهام وتوجيه</span>
                 <?php $totalAlerts = count($outOfRegionTasks) + count($unassignedTasks) + count($overloadedEmps); if($totalAlerts > 0): ?><span class="badge bg-danger ms-auto"><?= $totalAlerts; ?></span><?php endif; ?>
             </a>
-            <a class="nav-item" onclick="openPage('page-archive', this)"><i class="fa-solid fa-shield-halved"></i> أرشيف المرفوضات</a>
-            <a class="nav-item" onclick="openPage('page-hr', this)"><i class="fa-solid fa-users-gear"></i> إدارة شؤون الموظفين</a>
+            <a class="nav-item" onclick="openPage('page-archive', this)"><i class="fa-solid fa-shield-halved"></i><span class="nav-text">أرشيف المرفوضات</span></a>
+            <a class="nav-item" onclick="openPage('page-hr', this)"><i class="fa-solid fa-users-gear"></i><span class="nav-text">شؤون الموظفين</span></a>
         </div>
         <div class="p-3 border-top border-secondary">
             <a href="employee_dashboard.php" class="btn btn-outline-light w-100 fw-bold rounded-pill"><i class="fa-solid fa-arrow-right-from-bracket fa-flip-horizontal me-2"></i> شاشة التوجيه</a>
@@ -350,6 +489,132 @@ $rejectedApps = $pdo->query("
                 </div>
             </div>
 
+            <!-- الصفحة الجديدة: تقارير الطلبات والموظفين الشاملة -->
+            <div id="page-reports" class="page-view">
+
+                <!-- إحصائيات سريعة عامة -->
+                <div class="row g-3 mb-4">
+                    <div class="col-md-3"><div class="mini-stat"><h3 class="text-primary"><?= $totalApps; ?></h3><p>إجمالي الطلبات</p></div></div>
+                    <div class="col-md-3"><div class="mini-stat"><h3 class="text-info"><?= $appsLast30Days; ?></h3><p>طلبات آخر 30 يوماً</p></div></div>
+                    <div class="col-md-3"><div class="mini-stat"><h3 class="text-danger"><?= $totalRejected; ?></h3><p>إجمالي المرفوضات</p></div></div>
+                    <div class="col-md-3"><div class="mini-stat"><h3 class="text-success"><?= $empActiveCount; ?> / <?= $empTotalCount; ?></h3><p>موظفون نشطون / الإجمالي</p></div></div>
+                </div>
+
+                <div class="row g-4">
+                    <!-- توزيع الطلبات حسب الحالة -->
+                    <div class="col-lg-6">
+                        <div class="admin-card h-100">
+                            <div class="card-title text-primary"><i class="fa-solid fa-diagram-project bg-primary text-white rounded p-2"></i> توزيع الطلبات حسب الحالة التشغيلية</div>
+                            <?php foreach($appsByStatus as $s): 
+                                $pct = round(($s['cnt'] / $maxStatusCnt) * 100);
+                                $color = $s['app_status'] == 'Completed' ? '#059669' : ($s['app_status'] == 'Rejected' ? '#dc2626' : '#4492d4');
+                            ?>
+                                <div class="bar-row">
+                                    <div class="bar-label"><?= appStatusLabelAr($s['app_status']); ?></div>
+                                    <div class="bar-track"><div class="bar-fill" style="width: <?= max($pct, 8) ?>%; background: <?= $color ?>;"><?= $s['cnt']; ?></div></div>
+                                </div>
+                            <?php endforeach; ?>
+                        </div>
+                    </div>
+
+                    <!-- توزيع الطلبات حسب نوع الخدمة -->
+                    <div class="col-lg-6">
+                        <div class="admin-card h-100">
+                            <div class="card-title text-info"><i class="fa-solid fa-droplet bg-info text-white rounded p-2"></i> توزيع الطلبات حسب نوع الخدمة</div>
+                            <?php foreach($appsByService as $s): $pct = round(($s['cnt'] / $maxServiceCnt) * 100); ?>
+                                <div class="bar-row">
+                                    <div class="bar-label"><?= htmlspecialchars($s['srv_name']); ?></div>
+                                    <div class="bar-track"><div class="bar-fill" style="width: <?= max($pct, 8) ?>%; background: #0dcaf0;"><?= $s['cnt']; ?></div></div>
+                                </div>
+                            <?php endforeach; ?>
+                        </div>
+                    </div>
+
+                    <!-- أكثر المدن طلباً -->
+                    <div class="col-lg-6">
+                        <div class="admin-card h-100">
+                            <div class="card-title text-success"><i class="fa-solid fa-city bg-success text-white rounded p-2"></i> أكثر 5 مدن من حيث عدد الطلبات</div>
+                            <?php if(empty($appsByCity)): ?>
+                                <p class="text-muted fw-bold text-center py-3">لا توجد بيانات كافية بعد.</p>
+                            <?php else: foreach($appsByCity as $s): $pct = round(($s['cnt'] / $maxCityCnt) * 100); ?>
+                                <div class="bar-row">
+                                    <div class="bar-label"><?= htmlspecialchars(str_replace('مدينة ', '', $s['cty_name'])); ?></div>
+                                    <div class="bar-track"><div class="bar-fill" style="width: <?= max($pct, 8) ?>%; background: #059669;"><?= $s['cnt']; ?></div></div>
+                                </div>
+                            <?php endforeach; endif; ?>
+                        </div>
+                    </div>
+
+                    <!-- إحصائية مصدر الرفض -->
+                    <div class="col-lg-6">
+                        <div class="admin-card h-100">
+                            <div class="card-title text-danger"><i class="fa-solid fa-ban bg-danger text-white rounded p-2"></i> مصدر الطلبات المرفوضة</div>
+                            <div class="row text-center g-3">
+                                <div class="col-6">
+                                    <div class="p-3 border rounded-3 bg-light">
+                                        <i class="fa-solid fa-robot fs-2 text-secondary mb-2"></i>
+                                        <h3 class="fw-black m-0"><?= $rejectedAutoCount; ?></h3>
+                                        <p class="small text-muted fw-bold m-0">رفض آلي (محرك DSS)</p>
+                                    </div>
+                                </div>
+                                <div class="col-6">
+                                    <div class="p-3 border rounded-3 bg-light">
+                                        <i class="fa-solid fa-user-shield fs-2 text-secondary mb-2"></i>
+                                        <h3 class="fw-black m-0"><?= $rejectedManualCount; ?></h3>
+                                        <p class="small text-muted fw-bold m-0">رفض بشري (مدقق)</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- إحصائيات الموظفين الشاملة -->
+                    <div class="col-lg-6">
+                        <div class="admin-card h-100">
+                            <div class="card-title text-primary"><i class="fa-solid fa-users-viewfinder bg-primary text-white rounded p-2"></i> توزيع الموظفين حسب الصلاحية</div>
+                            <?php $maxRoleCnt = 1; foreach($empByRole as $r) { $maxRoleCnt = max($maxRoleCnt, $r['cnt']); } ?>
+                            <?php foreach($empByRole as $r): $pct = round(($r['cnt'] / $maxRoleCnt) * 100); ?>
+                                <div class="bar-row">
+                                    <div class="bar-label"><?= roleLabelAr($r['role_name']); ?></div>
+                                    <div class="bar-track"><div class="bar-fill" style="width: <?= max($pct, 8) ?>%; background: var(--blue);"><?= $r['cnt']; ?></div></div>
+                                </div>
+                            <?php endforeach; ?>
+                            <div class="d-flex justify-content-around mt-3 pt-3 border-top">
+                                <span class="fw-bold text-success"><i class="fa-solid fa-circle-check"></i> نشطون: <?= $empActiveCount; ?></span>
+                                <span class="fw-bold text-danger"><i class="fa-solid fa-circle-xmark"></i> موقوفون: <?= $empInactiveCount; ?></span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- أفضل 5 موظفين من حيث الإنجاز -->
+                    <div class="col-lg-6">
+                        <div class="admin-card h-100">
+                            <div class="card-title text-warning"><i class="fa-solid fa-trophy bg-warning text-dark rounded p-2"></i> الأعلى إنجازاً (أفضل 5 موظفين)</div>
+                            <?php if(empty($topPerformers)): ?>
+                                <p class="text-muted fw-bold text-center py-3">لا توجد بيانات إنجاز كافية بعد.</p>
+                            <?php else: ?>
+                                <table class="table table-sm">
+                                    <thead><tr><th>#</th><th>الموظف</th><th>المنصب</th><th class="text-center">إجمالي الإنجاز</th></tr></thead>
+                                    <tbody>
+                                        <?php foreach($topPerformers as $idx => $p): 
+                                            $total = $p['fi_completed'] + $p['it_completed'] + $p['audits_completed'];
+                                            if ($total == 0) continue;
+                                        ?>
+                                        <tr>
+                                            <td class="fw-black text-muted"><?= $idx + 1; ?></td>
+                                            <td class="fw-bold"><?= htmlspecialchars($p['emp_name']); ?></td>
+                                            <td><span class="badge bg-light text-dark border"><?= htmlspecialchars($p['roles']); ?></span></td>
+                                            <td class="text-center"><span class="badge bg-success fs-6"><?= $total; ?></span></td>
+                                        </tr>
+                                        <?php endforeach; ?>
+                                    </tbody>
+                                </table>
+                            <?php endif; ?>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- الصفحة 2: تقارير الأداء المطور -->
             <div id="page-performance" class="page-view">
                 <div class="admin-card">
@@ -367,6 +632,11 @@ $rejectedApps = $pdo->query("
                                     $pbColor = 'bg-success';
                                     if ($completionRate < 50) $pbColor = 'bg-danger';
                                     elseif ($completionRate < 80) $pbColor = 'bg-warning';
+
+                                    // لون شارة المهام المتراكمة حسب عتبة التراكم (8 مهام فأكثر = أحمر)
+                                    $workloadBadge = 'bg-success';
+                                    if ($perf['active_tasks_count'] >= OVERLOAD_THRESHOLD) $workloadBadge = 'bg-danger';
+                                    elseif ($perf['active_tasks_count'] >= 4) $workloadBadge = 'bg-warning text-dark';
                                 ?>
                                 <tr>
                                     <td class="fw-bold"><?= htmlspecialchars($perf['emp_name']); ?></td>
@@ -379,7 +649,7 @@ $rejectedApps = $pdo->query("
                                             <?= $totalCompleted == 0 ? "لا يوجد إنجازات" : "" ?>
                                         </div>
                                     </td>
-                                    <td class="text-center"><span class="badge bg-<?= $perf['active_tasks_count'] >= 3 ? 'danger' : 'warning text-dark' ?> fs-6"><?= $perf['active_tasks_count']; ?></span></td>
+                                    <td class="text-center"><span class="badge <?= $workloadBadge ?> fs-6"><?= $perf['active_tasks_count']; ?></span></td>
                                     <td>
                                         <div class="d-flex justify-content-between small fw-bold mb-1">
                                             <span>معدل الإنجاز</span><span><?= $completionRate ?>%</span>
@@ -396,16 +666,25 @@ $rejectedApps = $pdo->query("
                 </div>
             </div>
 
-            <!-- الصفحة 3: التنبيهات والتوجيه (مع ميزة الاختيار اليدوي) -->
+            <!-- الصفحة 3: التنبيهات والتوجيه (مع ميزة الاختيار اليدوي والإسناد الجماعي) -->
             <div id="page-alerts" class="page-view">
                 
                 <!-- قسم 1: المهام غير المسندة -->
                 <div class="admin-card mb-4">
-                    <div class="card-title text-danger"><i class="fa-solid fa-triangle-exclamation bg-danger text-white rounded p-2"></i> الطوارئ: مهام لم تجد فني في مدينتها!</div>
+                    <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
+                        <div class="card-title text-danger m-0 border-0 p-0"><i class="fa-solid fa-triangle-exclamation bg-danger text-white rounded p-2"></i> الطوارئ: مهام لم تجد فني في مدينتها!</div>
+                        <?php if(!empty($unassignedTasks)): ?>
+                            <form method="POST" onsubmit="return confirm('سيتم البحث عن أقرب فني متاح لكل مهمة غير مسندة (بنفس المدينة أو المنطقة) وإسنادها آلياً دفعة واحدة. متابعة؟');">
+                                <button type="submit" name="dispatch_all_unassigned" class="btn btn-primary fw-bold rounded-pill px-4">
+                                    <i class="fa-solid fa-bolt me-1"></i> إسناد جميع المهام آلياً دفعة واحدة (<?= count($unassignedTasks); ?>)
+                                </button>
+                            </form>
+                        <?php endif; ?>
+                    </div>
                     <?php if(empty($unassignedTasks)): ?>
                         <div class="text-center py-4"><i class="fa-solid fa-check-circle text-success fs-1 mb-2"></i><p class="fw-bold text-success m-0">نظام التوزيع يعمل 100%. لا يوجد مهام معلقة.</p></div>
                     <?php else: ?>
-                        <div class="alert border border-danger fw-bold bg-white text-danger"><i class="fa-solid fa-info-circle me-2"></i> فشل النظام في إسناد هذه الطلبات. يمكنك اختيار البحث الآلي في المنطقة، أو إسنادها يدوياً لأي فني متاح.</div>
+                        <div class="alert border border-danger fw-bold bg-white text-danger"><i class="fa-solid fa-info-circle me-2"></i> فشل النظام في إسناد هذه الطلبات. يمكنك الضغط على زر الإسناد الجماعي أعلاه لتوزيعها كلها آلياً دفعة واحدة، أو التعامل مع كل طلب على حدة (بحث آلي فردي أو إسناد يدوي) من الجدول أدناه.</div>
                         <div class="table-responsive">
                             <table class="table border">
                                 <thead><tr><th>الطلب</th><th>مدينة العميل</th><th>بحث إقليمي آلي</th><th style="width: 300px;">إسناد يدوياً (اختيار مدير)</th></tr></thead>
@@ -454,7 +733,7 @@ $rejectedApps = $pdo->query("
 
                 <!-- قسم 2: ضغط العمل وإعادة التوزيع -->
                 <div class="admin-card">
-                    <div class="card-title text-warning"><i class="fa-solid fa-triangle-exclamation bg-warning text-dark rounded p-2"></i> موظفون ذوي مهام متراكمة</div>
+                    <div class="card-title text-warning"><i class="fa-solid fa-triangle-exclamation bg-warning text-dark rounded p-2"></i> موظفون ذوي مهام متراكمة (<?= OVERLOAD_THRESHOLD; ?> مهام فأكثر)</div>
                     <?php if(empty($overloadedEmps)): ?>
                         <div class="text-center py-4"><i class="fa-solid fa-check-circle text-success fs-1 mb-2"></i><p class="fw-bold text-success m-0">توزيع المهام مثالي ولا يوجد تراكم.</p></div>
                     <?php else: ?>
@@ -512,6 +791,15 @@ $rejectedApps = $pdo->query("
 
             <!-- الصفحة 5: إدارة الموارد البشرية -->
             <div id="page-hr" class="page-view">
+
+                <!-- إحصائيات سريعة عن الموظفين -->
+                <div class="row g-3 mb-4">
+                    <div class="col-md-3"><div class="mini-stat"><h3 class="text-primary"><?= $empTotalCount; ?></h3><p>إجمالي الموظفين</p></div></div>
+                    <div class="col-md-3"><div class="mini-stat"><h3 class="text-success"><?= $empActiveCount; ?></h3><p>موظفون نشطون</p></div></div>
+                    <div class="col-md-3"><div class="mini-stat"><h3 class="text-danger"><?= $empInactiveCount; ?></h3><p>موظفون موقوفون</p></div></div>
+                    <div class="col-md-3"><div class="mini-stat"><h3 class="text-warning"><?= count($overloadedEmps); ?></h3><p>لديهم مهام متراكمة</p></div></div>
+                </div>
+
                 <div class="row g-4">
                     <div class="col-lg-3">
                         <div class="admin-card h-100">
@@ -547,7 +835,7 @@ $rejectedApps = $pdo->query("
                             <div class="card-title"><i class="fa-solid fa-users text-primary"></i> قاعدة بيانات الموظفين الشاملة</div>
                             <div class="table-responsive">
                                 <table class="table table-hover">
-                                    <thead><tr><th>الموظف</th><th>الصلاحية</th><th>الحالة</th><th>الإجراء</th></tr></thead>
+                                    <thead><tr><th>الموظف</th><th>الصلاحية</th><th>المدينة</th><th class="text-center">مهام نشطة</th><th>الحالة</th><th>الإجراء</th></tr></thead>
                                     <tbody>
                                         <?php foreach($employeesData as $emp): ?>
                                             <tr>
@@ -557,6 +845,15 @@ $rejectedApps = $pdo->query("
                                                         $t = $r == 'Admin' ? 'مدير' : ($r == 'Auditor' ? 'مدقق' : ($r == 'Inspection Technician' ? 'فحص' : 'تركيب'));
                                                         echo "<span class='badge bg-light text-dark border me-1'>$t</span>";
                                                     endforeach; ?>
+                                                </td>
+                                                <td class="small text-muted"><?= htmlspecialchars(str_replace('مدينة ', '', $emp['cty_name'] ?? '-')) ?></td>
+                                                <td class="text-center">
+                                                    <?php
+                                                        $wBadge = 'bg-success';
+                                                        if ($emp['active_tasks_count'] >= OVERLOAD_THRESHOLD) $wBadge = 'bg-danger';
+                                                        elseif ($emp['active_tasks_count'] >= 4) $wBadge = 'bg-warning text-dark';
+                                                    ?>
+                                                    <span class="badge <?= $wBadge ?>"><?= $emp['active_tasks_count']; ?></span>
                                                 </td>
                                                 <td><?= $emp['is_active'] ? "<span class='badge bg-success'>نشط</span>" : "<span class='badge bg-danger'>موقوف</span>" ?></td>
                                                 <td>
