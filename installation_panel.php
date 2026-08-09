@@ -42,6 +42,9 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['complete_task'])) {
     if (empty($mtrSerial)) {
         $msg = "خطأ: يجب إدخال الرقم التسلسلي للعداد.";
         $msgType = "error";
+    } elseif ($initialReading < 0) {
+        $msg = "خطأ: القراءة الافتتاحية للعداد لا يمكن أن تكون قيمة سالبة.";
+        $msgType = "error";
     } else {
         try {
             $pdo->beginTransaction();
@@ -317,7 +320,7 @@ $completedTasks = $stmtCompletedTasks->fetchAll(PDO::FETCH_ASSOC);
                                     <div class="row g-3">
                                         <div class="col-md-6">
                                             <label class="form-label">طول الأنبوب المستخدم (متر)</label>
-                                            <input type="number" step="0.1" name="pipe_length" class="form-control" placeholder="مثال: 12.5" required>
+                                            <input type="number" step="0.1" min="0" name="pipe_length" class="form-control" placeholder="مثال: 12.5" required>
                                         </div>
                                         <div class="col-md-6">
                                             <label class="form-label">قطر الأنبوب (بوصة / Inch)</label>
@@ -342,7 +345,8 @@ $completedTasks = $stmtCompletedTasks->fetchAll(PDO::FETCH_ASSOC);
                                         </div>
                                         <div class="col-md-12">
                                             <label class="form-label">القراءة الافتتاحية المبدئية للعداد (م³)</label>
-                                            <input type="number" step="0.01" name="initial_reading" class="form-control" value="0.00" required>
+                                            <input type="number" step="0.01" min="0" name="initial_reading" class="form-control" value="0.00" required oninput="if(this.value < 0) this.value = 0;">
+                                            <small class="text-muted">لا يمكن أن تكون القراءة الافتتاحية أقل من صفر.</small>
                                         </div>
                                     </div>
 
