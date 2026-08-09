@@ -343,7 +343,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
 
 // جلب البيانات والإحصائيات والتقارير
 $cities = $pdo->query("SELECT * FROM city")->fetchAll(PDO::FETCH_ASSOC);
-$rolesList = $pdo->query("SELECT MIN(role_id) as role_id, role_name FROM system_role GROUP BY role_name")->fetchAll(PDO::FETCH_ASSOC);
+$rolesList = $pdo->query("SELECT MIN(role_id) as role_id, role_name FROM system_role WHERE role_name != 'Technician' GROUP BY role_name")->fetchAll(PDO::FETCH_ASSOC);
 
 function roleLabelAr($roleName) {
     switch ($roleName) {
@@ -518,10 +518,9 @@ body { font-family: 'Cairo', sans-serif; background-color: var(--bg); margin: 0;
 <div class="sidebar-nav">
 <a class="nav-item active" onclick="openPage('page-stats', this)"><i class="fa-solid fa-chart-pie"></i><span class="nav-text">نظرة عامة</span></a>
 <a class="nav-item" onclick="openPage('page-reports', this)"><i class="fa-solid fa-chart-column"></i><span class="nav-text">تقارير الطلبات</span></a>
-<a class="nav-item" onclick="openPage('page-performance', this)"><i class="fa-solid fa-ranking-star"></i><span class="nav-text">تقارير الأداء</span></a>
 <a class="nav-item" onclick="openPage('page-alerts', this)">
 <i class="fa-solid fa-triangle-exclamation"></i><span class="nav-text">مهام وتوجيه</span>
-<?php $totalAlerts = count($outOfRegionTasks) + count($unassignedTasks) + count($overloadedEmps); if($totalAlerts > 0): ?><span class="badge bg-danger ms-auto"><?= $totalAlerts; ?></span><?php endif; ?>
+<?php $totalAlerts = count($unassignedTasks) + count($overloadedEmps); if($totalAlerts > 0): ?><span class="badge bg-danger ms-auto"><?= $totalAlerts; ?></span><?php endif; ?>
 </a>
 <a class="nav-item" onclick="openPage('page-archive', this)"><i class="fa-solid fa-shield-halved"></i><span class="nav-text">أرشيف المرفوضات</span></a>
 <a class="nav-item" onclick="openPage('page-hr', this)"><i class="fa-solid fa-users-gear"></i><span class="nav-text">شؤون الموظفين</span></a>
@@ -691,52 +690,6 @@ if ($total == 0) continue;
 </div>
 </div>
 
-<div id="page-performance" class="page-view">
-<div class="admin-card">
-<div class="card-title text-success"><i class="fa-solid fa-ranking-star bg-success text-white rounded p-2"></i> التقرير التشغيلي لأداء الموظفين</div>
-<div class="table-responsive">
-<table class="table table-hover">
-<thead><tr><th>اسم الموظف</th><th>المنصب</th><th class="text-center">تفاصيل الإنجاز</th><th class="text-center text-warning">المهام المتراكمة</th><th style="width: 200px;">مؤشر الإنجاز العام</th></tr></thead>
-<tbody>
-<?php foreach($detailedPerformance as $perf):
-$totalCompleted = $perf['fi_completed'] + $perf['it_completed'] + $perf['audits_completed'];
-$totalHandled = $totalCompleted + $perf['active_tasks_count'];
-$completionRate = ($totalHandled > 0) ? round(($totalCompleted / $totalHandled) * 100) : 0;
-$pbColor = 'bg-success';
-if ($completionRate < 50) $pbColor = 'bg-danger';
-elseif ($completionRate < 80) $pbColor = 'bg-warning';
-$workloadBadge = 'bg-success';
-if ($perf['active_tasks_count'] >= OVERLOAD_THRESHOLD) $workloadBadge = 'bg-danger';
-elseif ($perf['active_tasks_count'] >= 4) $workloadBadge = 'bg-warning text-dark';
-?>
-<tr>
-<td class="fw-bold"><?= htmlspecialchars($perf['emp_name']); ?></td>
-<td><span class="badge bg-light text-dark border"><?= htmlspecialchars($perf['roles']); ?></span></td>
-<td class="text-center">
-<div class="small fw-bold text-muted">
-<?= $perf['fi_completed'] > 0 ? "<span class='text-primary'>فحص: {$perf['fi_completed']}</span> | " : "" ?>
-<?= $perf['it_completed'] > 0 ? "<span class='text-success'>تركيب: {$perf['it_completed']}</span> | " : "" ?>
-<?= $perf['audits_completed'] > 0 ? "<span class='text-info'>تدقيق: {$perf['audits_completed']}</span>" : "" ?>
-<?= $totalCompleted == 0 ? "لا يوجد إنجازات" : "" ?>
-</div>
-</td>
-<td class="text-center"><span class="badge <?= $workloadBadge ?> fs-6"><?= $perf['active_tasks_count']; ?></span></td>
-<td>
-<div class="d-flex justify-content-between small fw-bold mb-1">
-<span>معدل الإنجاز</span><span><?= $completionRate ?>%</span>
-</div>
-<div class="progress" style="height: 8px;">
-<div class="progress-bar <?= $pbColor ?>" role="progressbar" style="width: <?= $completionRate ?>%;"></div>
-</div>
-</td>
-</tr>
-<?php endforeach; ?>
-</tbody>
-</table>
-</div>
-</div>
-</div>
-
 <div id="page-alerts" class="page-view">
 <div class="admin-card mb-4">
 <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
@@ -794,7 +747,7 @@ if(strpos($tech['role_name'], $reqRole) !== false): ?>
 </div>
 
 <div class="admin-card">
-<div class="card-title text-warning"><i class="fa-solid fa-triangle-exclamation bg-warning text-dark rounded p-2"></i> موظعون ذوي مهام متراكمة (<?= OVERLOAD_THRESHOLD; ?> مهام فأكثر)</div>
+<div class="card-title text-warning"><i class="fa-solid fa-triangle-exclamation bg-warning text-dark rounded p-2"></i> موظفون ذوي مهام متراكمة (<?= OVERLOAD_THRESHOLD; ?> مهام فأكثر)</div>
 <?php if(empty($overloadedEmps)): ?>
 <div class="text-center py-4"><i class="fa-solid fa-check-circle text-success fs-1 mb-2"></i><p class="fw-bold text-success m-0">توزيع المهام مثالي ولا يوجد تراكم.</p></div>
 <?php else: ?>
