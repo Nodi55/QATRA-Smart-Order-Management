@@ -9,7 +9,18 @@ if (!isset($_SESSION['emp_id']) || (!in_array('Auditor', $_SESSION['emp_roles'])
     exit;
 }
 
+
 require_once 'db_connect.php';
+
+if (!function_exists('cleanServiceName')) {
+    function cleanServiceName($name) {
+        if (strpos($name, 'مياه وصرف') !== false) return 'مياه وصرف';
+        if (strpos($name, 'مياه') !== false) return 'مياه';
+        if (strpos($name, 'صرف') !== false) return 'صرف';
+        return $name;
+    }
+}
+
 $msg = ""; $msgType = "";
 $empId = $_SESSION['emp_id'];
 
@@ -53,9 +64,14 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
                 // زيادة عداد مهام الفني النشطة بمقدار 1
                 $pdo->prepare("UPDATE company_employee SET active_tasks_count = active_tasks_count + 1 WHERE emp_id = ?")->execute([$assigned['emp_id']]);
                 
+                // جلب اسم الفني
+                $stmtTechName = $pdo->prepare("SELECT emp_name FROM company_employee WHERE emp_id = ?");
+                $stmtTechName->execute([$assigned['emp_id']]);
+                $techName = $stmtTechName->fetchColumn() ?? 'فني قطرة';
+
                 $locationNote = ($assigned['cty_id'] == $cityId) ? "في نفس مدينة العقار" : "في مدينة مجاورة (".$assigned['cty_name'].")";
-                $notifMsg = "تهانينا! تمت مراجعة صك عقارك يدوياً وقبوله بنجاح. تم توجيه الطلب إلى فني الفحص الميداني المتاح " . $locationNote . ".";
-                $msg = "تمت الموافقة على الطلب وإسناده آلياً بنجاح لفني الفحص الميداني."; $msgType = "success";
+                $notifMsg = "تهانينا! تمت مراجعة صك عقارك يدوياً وقبوله بنجاح. تم توجيه الطلب إلى فني الفحص الميداني المتاح " . $locationNote . " وإسناد المهمة للموظف المتميز: " . $techName;
+                $msg = "تمت الموافقة على الطلب وإسناده آلياً بنجاح لفني الفحص الميداني (" . $techName . ")."; $msgType = "success";
             } else {
                 // إذا لم يوجد أي فني في المنطقة، يترك الطلب معلقاً للمدير ليتدخل يدوياً
                 $notifMsg = "تم قبول صك عقارك يدوياً، وجاري جدولة فني الفحص الميداني للزيارة قريباً.";

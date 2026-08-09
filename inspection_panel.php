@@ -9,46 +9,19 @@ if (!isset($_SESSION['emp_id']) || !in_array('Inspection Technician', $_SESSION[
     exit;
 }
 
+
 require_once 'db_connect.php';
+
+if (!function_exists('cleanServiceName')) {
+    function cleanServiceName($name) {
+        if (strpos($name, 'مياه وصرف') !== false) return 'مياه وصرف';
+        if (strpos($name, 'مياه') !== false) return 'مياه';
+        if (strpos($name, 'صرف') !== false) return 'صرف';
+        return $name;
+    }
+}
+
 $msg = ""; $msgType = "";
-
-// تهيئة ذكية: تأكيد وجود جدول الإشعارات والتحذيرات للموظفين
-try {
-    $pdo->query("SELECT 1 FROM employee_notification LIMIT 1");
-} catch (Exception $e) {
-    $pdo->exec("
-        CREATE TABLE IF NOT EXISTS `employee_notification` (
-            `notif_id` int NOT NULL AUTO_INCREMENT,
-            `emp_id` int NOT NULL,
-            `message_content` text NOT NULL,
-            `created_at` datetime DEFAULT CURRENT_TIMESTAMP,
-            `is_read` tinyint(1) DEFAULT '0',
-            `notif_type` varchar(50) DEFAULT 'info',
-            PRIMARY KEY (`notif_id`),
-            KEY `emp_id` (`emp_id`),
-            CONSTRAINT `employee_notification_ibfk_1` FOREIGN KEY (`emp_id`) REFERENCES `company_employee` (`emp_id`) ON DELETE CASCADE
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
-    ");
-}
-
-// معالجة قراءة إشعارات الموظف
-if (isset($_GET['read_notif'])) {
-    $notifId = intval($_GET['read_notif']);
-    $pdo->prepare("UPDATE employee_notification SET is_read = 1 WHERE notif_id = ? AND emp_id = ?")->execute([$notifId, $empId]);
-    header("Location: inspection_panel.php");
-    exit;
-}
-
-// جلب إشعارات الموظف الحالي غير المقروءة
-$empNotifs = [];
-try {
-    $notifStmt = $pdo->prepare("SELECT * FROM employee_notification WHERE emp_id = ? AND is_read = 0 ORDER BY created_at DESC");
-    $notifStmt->execute([$empId]);
-    $empNotifs = $notifStmt->fetchAll(PDO::FETCH_ASSOC);
-} catch (Exception $e) {
-    // صامتة
-}
-
 
 if (isset($_GET['success_msg'])) {
     $msg = $_GET['success_msg'];
@@ -110,10 +83,13 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['submit_inspection'])) 
 
             // 2. تحديث الطلب بناءً على النتيجة
             if ($inspection_result == 'Passed') {
-                // جلب رقم الصك لتحديد مساحة العقار وحساب الفاتورة
-                $stmtApp = $pdo->prepare("SELECT deed_no FROM application WHERE app_id = ?");
+                // جلب رقم الصك وتحديد نوع الخدمة ومعلومات العميل
+                $stmtApp = $pdo->prepare("SELECT deed_no, srv_id, cust_id FROM application WHERE app_id = ?");
                 $stmtApp->execute([$app_id]);
-                $deed_no = $stmtApp->fetchColumn();
+                $app_info = $stmtApp->fetch();
+                $deed_no = $app_info['deed_no'];
+                $srv_id = $app_info['srv_id'];
+                $cust_id = $app_info['cust_id'];
 
                 // جلب المساحة من وزارة العدل
                 $stmtMoj = $pdo->prepare("SELECT land_area FROM moj_record WHERE deed_no = ?");
@@ -124,13 +100,39 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['submit_inspection'])) 
                     $land_area = 500; // قيمة افتراضية احتياطية في حال عدم المطابقة
                 }
 
-                // حساب تسعيرة الخدمة حسب المساحة آلياً
-                // مساحة <= 675 -> 3450 ريال
-                // مساحة أكبر من 675 -> المساحة × 10 ريال
-                if ($land_area <= 675) {
-                    $amount = 3450;
+                $amount = 0;
+                if ($srv_id == 1) {
+                    // حساب تسعيرة المياه حسب المساحة آلياً
+                    if ($land_area <= 675) {
+                        $amount = 3450;
+                    } else {
+                        $amount = $land_area * 10;
+                    }
+                } else if ($srv_id == 2) {
+                    // حساب تسعيرة الصرف الصحي
+                    // التحقق من وجود طلب مياه نشط أو سابق لنفس صك العقار لتقديم تسعيرة المشترك الموحد (نصف قيمة المياه)
+                    $stmtCheckWater = $pdo->prepare("SELECT COUNT(*) FROM application WHERE deed_no = ? AND srv_id = 1 AND app_status != 'Rejected'");
+                    $stmtCheckWater->execute([$deed_no]);
+                    $hasWater = $stmtCheckWater->fetchColumn() > 0;
+
+                    if ($hasWater) {
+                        // نصف قيمة المياه
+                        if ($land_area <= 675) {
+                            $amount = 3450 / 2; // 1725 ريال
+                        } else {
+                            $amount = ($land_area * 10) / 2;
+                        }
+                    } else {
+                        // خدمة مستقلة لوحدها دون مياه سعره 3500 ريال
+                        $amount = 3500;
+                    }
                 } else {
-                    $amount = $land_area * 10;
+                    // خدمة افتراضية احتياطية
+                    if ($land_area <= 675) {
+                        $amount = 3450;
+                    } else {
+                        $amount = $land_area * 10;
+                    }
                 }
 
                 // إنشاء الفاتورة غير مدفوعة
@@ -148,6 +150,16 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['submit_inspection'])) 
                 // تسجيل الحركات في الأرشيف والتاريخ
                 $stmtHist = $pdo->prepare("INSERT INTO application_history (app_id, status, changed_by, change_date) VALUES (?, 'Pending_Billing', ?, NOW())");
                 $stmtHist->execute([$app_id, $emp_id]);
+
+                // جلب اسم الفني المسؤول عن الفحص لإضافته للإشعار
+                $stmtEmpName = $pdo->prepare("SELECT emp_name FROM company_employee WHERE emp_id = ?");
+                $stmtEmpName->execute([$emp_id]);
+                $techName = $stmtEmpName->fetchColumn() ?? 'فني قطرة';
+
+                $srvName = ($srv_id == 1) ? 'شبكة مياه' : 'صرف صحي';
+                $custNotifMsg = "شريكنا العزيز، تم الانتهاء من الفحص الميداني لطلبكم المخصص لـ (" . cleanServiceName($srvName) . ") رقم #" . str_pad($app_id, 5, '0', STR_PAD_LEFT) . " بنجاح بواسطة الموظف المتميز: " . $techName . ". تم اعتماد جاهزية العقار بنجاح وإصدار فاتورة التأسيس والربط بقيمة " . number_format($amount) . " ريال. يرجى سداد الفاتورة عبر البوابة الذكية ليتسنى لنا جدولة فني التركيبات وتوصيل العداد الذكي.";
+                
+                $pdo->prepare("INSERT INTO notification (message_content, cust_id) VALUES (?, ?)")->execute([$custNotifMsg, $cust_id]);
 
             } else {
                 // في حال رفض الموقع، يتم رفض الطلب نهائياً بالأرشيف الأمني وتوثيق السبب
@@ -307,45 +319,6 @@ $completedTasks = $stmtHistory->fetchAll(PDO::FETCH_ASSOC);
 
         <div class="content-area">
             <?php if ($msg): ?>
-
-            <!-- مركز التنبيهات والإنذارات الإدارية للموظف -->
-            <?php if (!empty($empNotifs)): ?>
-                <div class="row mb-4 w-100 px-3">
-                    <div class="col-12">
-                        <div class="card border-0 shadow-sm rounded-4" style="background: linear-gradient(135deg, #fffbeb 0%, #fff7ed 100%); border-right: 6px solid #f97316 !important;">
-                            <div class="card-body p-4">
-                                <div class="d-flex justify-content-between align-items-center mb-3">
-                                    <h5 class="fw-black text-warning m-0"><i class="fa-solid fa-bell fa-shake me-2"></i> مركز التنبيهات والإنذارات الإدارية الحرج!</h5>
-                                    <span class="badge bg-warning text-dark px-3 py-2 fw-bold"><?= count($empNotifs); ?> تنبيهات معلقة</span>
-                                </div>
-                                <div class="space-y-3">
-                                    <?php foreach ($empNotifs as $notif): 
-                                        $isWarning = ($notif['notif_type'] == 'warning');
-                                        $iconClass = $isWarning ? 'fa-triangle-exclamation text-danger' : 'fa-map-location-dot text-info';
-                                        $badgeClass = $isWarning ? 'bg-danger text-white' : 'bg-info text-dark';
-                                        $badgeLabel = $isWarning ? 'إنذار إداري من المدير' : 'مهمة خارج النطاق الجغرافي';
-                                    ?>
-                                        <div class="p-3 bg-white rounded-3 border d-flex justify-content-between align-items-center mb-2 w-100">
-                                            <div class="d-flex align-items-center gap-3">
-                                                <div class="rounded-circle bg-light d-flex align-items-center justify-content-center" style="width: 45px; height: 45px;">
-                                                    <i class="fa-solid <?= $iconClass; ?> fs-5"></i>
-                                                </div>
-                                                <div class="text-start">
-                                                    <span class="badge <?= $badgeClass; ?> fw-bold mb-1" style="font-size: 0.75rem;"><?= $badgeLabel; ?></span>
-                                                    <p class="m-0 fw-bold text-dark" style="font-size: 0.95rem;"><?= htmlspecialchars($notif['message_content']); ?></p>
-                                                    <small class="text-muted small"><i class="fa-regular fa-clock me-1"></i> <?= $notif['created_at']; ?></small>
-                                                </div>
-                                            </div>
-                                            <a href="?read_notif=<?= $notif['notif_id']; ?>" class="btn btn-sm btn-outline-secondary rounded-pill fw-bold"><i class="fa-solid fa-check me-1"></i> تحديد كمقروء</a>
-                                        </div>
-                                    <?php endforeach; ?>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            <?php endif; ?>
-
                 <script>
                     document.addEventListener('DOMContentLoaded', function() {
                         Swal.fire({ icon: '<?= $msgType ?>', title: 'إشعار الميدان', text: '<?= $msg ?>', confirmButtonColor: '#0b457f' });
