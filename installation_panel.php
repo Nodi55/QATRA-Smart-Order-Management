@@ -9,20 +9,47 @@ if (!isset($_SESSION['emp_id']) || !in_array('Installation Technician', $_SESSIO
     exit;
 }
 
-
 require_once 'db_connect.php';
-
-if (!function_exists('cleanServiceName')) {
-    function cleanServiceName($name) {
-        if (strpos($name, 'مياه وصرف') !== false) return 'مياه وصرف';
-        if (strpos($name, 'مياه') !== false) return 'مياه';
-        if (strpos($name, 'صرف') !== false) return 'صرف';
-        return $name;
-    }
-}
-
 $msg = ""; $msgType = "";
 $empId = $_SESSION['emp_id'];
+
+// تهيئة ذكية: تأكيد وجود جدول الإشعارات والتحذيرات للموظفين
+try {
+    $pdo->query("SELECT 1 FROM employee_notification LIMIT 1");
+} catch (Exception $e) {
+    $pdo->exec("
+        CREATE TABLE IF NOT EXISTS `employee_notification` (
+            `notif_id` int NOT NULL AUTO_INCREMENT,
+            `emp_id` int NOT NULL,
+            `message_content` text NOT NULL,
+            `created_at` datetime DEFAULT CURRENT_TIMESTAMP,
+            `is_read` tinyint(1) DEFAULT '0',
+            `notif_type` varchar(50) DEFAULT 'info',
+            PRIMARY KEY (`notif_id`),
+            KEY `emp_id` (`emp_id`),
+            CONSTRAINT `employee_notification_ibfk_1` FOREIGN KEY (`emp_id`) REFERENCES `company_employee` (`emp_id`) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+    ");
+}
+
+// معالجة قراءة إشعارات الموظف
+if (isset($_GET['read_notif'])) {
+    $notifId = intval($_GET['read_notif']);
+    $pdo->prepare("UPDATE employee_notification SET is_read = 1 WHERE notif_id = ? AND emp_id = ?")->execute([$notifId, $empId]);
+    header("Location: installation_panel.php");
+    exit;
+}
+
+// جلب إشعارات الموظف الحالي غير المقروءة
+$empNotifs = [];
+try {
+    $notifStmt = $pdo->prepare("SELECT * FROM employee_notification WHERE emp_id = ? AND is_read = 0 ORDER BY created_at DESC");
+    $notifStmt->execute([$empId]);
+    $empNotifs = $notifStmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (Exception $e) {
+    // صامتة
+}
+
 
 // =========================================================
 // معالجة إرسال مهمة التركيب وإغلاق الطلب
@@ -86,11 +113,9 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['complete_task'])) {
             $stmtInsertMeter->execute([$mtrSerial, $mtrType, $accId, $taskId]);
 
             // 4. تفعيل الخدمة للعميل (Activated Service)
-            $stmtAppSrv = $pdo->prepare("SELECT srv_id, cust_id FROM application WHERE app_id = ?");
+            $stmtAppSrv = $pdo->prepare("SELECT srv_id FROM application WHERE app_id = ?");
             $stmtAppSrv->execute([$appId]);
-            $appRow = $stmtAppSrv->fetch();
-            $srvId = $appRow['srv_id'] ?? null;
-            $custId = $appRow['cust_id'] ?? null;
+            $srvId = $stmtAppSrv->fetchColumn();
 
             if ($accId && $srvId) {
                 $stmtActivate = $pdo->prepare("INSERT INTO activated_service (acc_id, srv_id) VALUES (?, ?)");
@@ -115,18 +140,6 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['complete_task'])) {
                 WHERE emp_id = ?
             ");
             $stmtDecWorkload->execute([$empId]);
-
-            // جلب اسم فني التركيبات لإضافته للإشعار الترحيبي النهائي
-            $stmtEmpName = $pdo->prepare("SELECT emp_name FROM company_employee WHERE emp_id = ?");
-            $stmtEmpName->execute([$empId]);
-            $techName = $stmtEmpName->fetchColumn() ?? 'فني قطرة';
-
-            // 8. إرسال الإشعار الترحيبي النهائي للعميل
-            if ($custId) {
-                $srvName = ($srvId == 1) ? 'شبكة مياه' : 'صرف صحي';
-                $notifMsg = "شريكنا العزيز، نود إعلامكم بأنه تم الانتهاء من تركيب عداد خدمة (" . cleanServiceName($srvName) . ") بنجاح وعقاركم الآن متصل بالشبكة الذكية بالكامل بواسطة الموظف المتميز: " . $techName . ". نحن سعيدون جداً بخدمتكم، وشكراً لتعاونكم مع شركة المياه الوطنية (قطرة)!";
-                $pdo->prepare("INSERT INTO notification (message_content, cust_id) VALUES (?, ?)")->execute([$notifMsg, $custId]);
-            }
 
             $pdo->commit();
             $msg = "تم تركيب العداد بنجاح، وتفعيل حساب المشترك، وإغلاق الطلب نهائياً!";
@@ -248,6 +261,45 @@ $completedTasks = $stmtCompletedTasks->fetchAll(PDO::FETCH_ASSOC);
 
         <div class="content-area">
             <?php if($msg): ?>
+
+            <!-- مركز التنبيهات والإنذارات الإدارية للموظف -->
+            <?php if (!empty($empNotifs)): ?>
+                <div class="row mb-4 w-100 px-3">
+                    <div class="col-12">
+                        <div class="card border-0 shadow-sm rounded-4" style="background: linear-gradient(135deg, #fffbeb 0%, #fff7ed 100%); border-right: 6px solid #f97316 !important;">
+                            <div class="card-body p-4">
+                                <div class="d-flex justify-content-between align-items-center mb-3">
+                                    <h5 class="fw-black text-warning m-0"><i class="fa-solid fa-bell fa-shake me-2"></i> مركز التنبيهات والإنذارات الإدارية الحرج!</h5>
+                                    <span class="badge bg-warning text-dark px-3 py-2 fw-bold"><?= count($empNotifs); ?> تنبيهات معلقة</span>
+                                </div>
+                                <div class="space-y-3">
+                                    <?php foreach ($empNotifs as $notif): 
+                                        $isWarning = ($notif['notif_type'] == 'warning');
+                                        $iconClass = $isWarning ? 'fa-triangle-exclamation text-danger' : 'fa-map-location-dot text-info';
+                                        $badgeClass = $isWarning ? 'bg-danger text-white' : 'bg-info text-dark';
+                                        $badgeLabel = $isWarning ? 'إنذار إداري من المدير' : 'مهمة خارج النطاق الجغرافي';
+                                    ?>
+                                        <div class="p-3 bg-white rounded-3 border d-flex justify-content-between align-items-center mb-2 w-100">
+                                            <div class="d-flex align-items-center gap-3">
+                                                <div class="rounded-circle bg-light d-flex align-items-center justify-content-center" style="width: 45px; height: 45px;">
+                                                    <i class="fa-solid <?= $iconClass; ?> fs-5"></i>
+                                                </div>
+                                                <div class="text-start">
+                                                    <span class="badge <?= $badgeClass; ?> fw-bold mb-1" style="font-size: 0.75rem;"><?= $badgeLabel; ?></span>
+                                                    <p class="m-0 fw-bold text-dark" style="font-size: 0.95rem;"><?= htmlspecialchars($notif['message_content']); ?></p>
+                                                    <small class="text-muted small"><i class="fa-regular fa-clock me-1"></i> <?= $notif['created_at']; ?></small>
+                                                </div>
+                                            </div>
+                                            <a href="?read_notif=<?= $notif['notif_id']; ?>" class="btn btn-sm btn-outline-secondary rounded-pill fw-bold"><i class="fa-solid fa-check me-1"></i> تحديد كمقروء</a>
+                                        </div>
+                                    <?php endforeach; ?>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            <?php endif; ?>
+
                 <script>
                     document.addEventListener('DOMContentLoaded', function() {
                         Swal.fire({ icon: '<?= $msgType ?>', title: 'إشعار النظام', text: '<?= $msg ?>', confirmButtonColor: '#0b457f' });

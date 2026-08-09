@@ -3,7 +3,6 @@ error_reporting(E_ALL);
 ini_set('display_errors', 1);
 session_start();
 
-// التحقق من تسجيل الدخول وصلاحية مدير النظام (Admin)
 if (!isset($_SESSION['emp_id']) || !in_array('Admin', $_SESSION['emp_roles'])) {
     header("Location: employee_dashboard.php");
     exit;
@@ -12,170 +11,356 @@ if (!isset($_SESSION['emp_id']) || !in_array('Admin', $_SESSION['emp_roles'])) {
 require_once 'db_connect.php';
 $msg = ""; $msgType = "";
 
-// تهيئة ذكية: تأكيد وجود الصلاحيات الأربعة فقط وإضافة عمود الحالة إن لم يوجد
-try { 
-    $pdo->query("SELECT is_active FROM company_employee LIMIT 1"); 
-} catch (Exception $e) { 
-    $pdo->exec("ALTER TABLE company_employee ADD COLUMN is_active BOOLEAN DEFAULT 1"); 
+// =========================================================
+// (إصلاح) التأكد من وجود عمود is_active في الجدول قبل أي استعلام
+// يمنع ظهور خطأ: Unknown column 'ce.is_active' لو الجدول قديم/ناقص
+// =========================================================
+try {
+    $pdo->query("SELECT is_active FROM company_employee LIMIT 1");
+} catch (PDOException $e) {
+    $pdo->exec("ALTER TABLE company_employee ADD COLUMN is_active TINYINT(1) DEFAULT 1");
+    $pdo->exec("UPDATE company_employee SET is_active = 1 WHERE is_active IS NULL");
 }
 
-// مزامنة الصلاحيات الأربعة المعتمدة للنظام
-$requiredRoles = ['Admin', 'Auditor', 'Inspection Technician', 'Installation Technician'];
-foreach ($requiredRoles as $roleName) {
-    $stmtCheck = $pdo->prepare("SELECT role_id FROM system_role WHERE role_name = ?");
-    $stmtCheck->execute([$roleName]);
-    if ($stmtCheck->rowCount() == 0) {
-        $pdo->prepare("INSERT INTO system_role (role_name) VALUES (?)")->execute([$roleName]);
-    }
+// (إصلاح إضافي) التأكد من وجود عمود active_tasks_count أيضاً لنفس السبب
+try {
+    $pdo->query("SELECT active_tasks_count FROM company_employee LIMIT 1");
+} catch (PDOException $e) {
+    $pdo->exec("ALTER TABLE company_employee ADD COLUMN active_tasks_count INT DEFAULT 0");
+    $pdo->exec("UPDATE company_employee SET active_tasks_count = 0 WHERE active_tasks_count IS NULL");
 }
+
+// عتبة اعتبار الموظف "متراكم المهام" - تم رفعها من 3 إلى 8 مهام نشطة
+define('OVERLOAD_THRESHOLD', 8);
 
 // =========================================================
-// معالجة العمليات (إضافة، تعديل، إيقاف، حذف) للموظفين
+// معالجة العمليات (إضافة، تعديل، إيقاف، التوزيع الجغرافي واليدوي)
 // =========================================================
 if ($_SERVER["REQUEST_METHOD"] == "POST") {
     
-    // 1. إضافة موظف جديد
+    // 1. إضافة موظف
     if (isset($_POST['add_employee'])) {
-        $empName = trim($_POST['emp_name']);
-        $empEmail = trim($_POST['emp_email']);
+        $empName = trim($_POST['emp_name']); $empEmail = trim($_POST['emp_email']);
         $empPassword = password_hash($_POST['password'], PASSWORD_DEFAULT);
-        $ctyId = $_POST['cty_id'];
-        $selectedRoles = $_POST['roles'] ?? [];
+        $ctyId = $_POST['cty_id']; $selectedRoles = $_POST['roles'] ?? [];
 
         if (empty($selectedRoles)) {
-            $msg = "خطأ: يجب تحديد صلاحية واحدة على الأقل.";
-            $msgType = "danger";
+            $msg = "خطأ: يجب تحديد صلاحية واحدة على الأقل."; $msgType = "error";
         } else {
             try {
                 $stmt = $pdo->prepare("INSERT INTO company_employee (emp_name, emp_email, password_hash, cty_id, is_active, active_tasks_count) VALUES (?, ?, ?, ?, 1, 0)");
                 $stmt->execute([$empName, $empEmail, $empPassword, $ctyId]);
                 $newEmpId = $pdo->lastInsertId();
-
-                foreach ($selectedRoles as $rId) {
-                    $pdo->prepare("INSERT INTO employee_roles (emp_id, role_id) VALUES (?, ?)")->execute([$newEmpId, $rId]);
-                }
-                $msg = "تم تسجيل الموظف بنجاح.";
-                $msgType = "success";
-            } catch (PDOException $e) {
-                $msg = "عفواً، البريد الإلكتروني مستخدم مسبقاً.";
-                $msgType = "danger";
-            }
+                foreach ($selectedRoles as $rId) { $pdo->prepare("INSERT INTO employee_roles (emp_id, role_id) VALUES (?, ?)")->execute([$newEmpId, $rId]); }
+                $msg = "تم تسجيل الموظف بنجاح."; $msgType = "success";
+            } catch (PDOException $e) { $msg = "البريد الإلكتروني مستخدم مسبقاً."; $msgType = "error"; }
         }
     }
 
     // 2. تحديث بيانات الموظف
     if (isset($_POST['edit_employee'])) {
-        $eId = $_POST['edit_emp_id'];
-        $eName = trim($_POST['edit_emp_name']);
-        $eEmail = trim($_POST['edit_emp_email']);
-        $eCty = $_POST['edit_cty_id'];
+        $eId = $_POST['edit_emp_id']; $eName = trim($_POST['edit_emp_name']);
+        $eEmail = trim($_POST['edit_emp_email']); $eCty = $_POST['edit_cty_id'];
         $selectedRoles = $_POST['edit_roles'] ?? [];
-
         try {
             $pdo->prepare("UPDATE company_employee SET emp_name=?, emp_email=?, cty_id=? WHERE emp_id=?")->execute([$eName, $eEmail, $eCty, $eId]);
             $pdo->prepare("DELETE FROM employee_roles WHERE emp_id=?")->execute([$eId]);
-            foreach ($selectedRoles as $rId) {
-                $pdo->prepare("INSERT INTO employee_roles (emp_id, role_id) VALUES (?, ?)")->execute([$eId, $rId]);
-            }
-            $msg = "تم التحديث بنجاح.";
-            $msgType = "success";
-        } catch (Exception $e) {
-            $msg = "خطأ في التحديث.";
-            $msgType = "danger";
-        }
+            foreach ($selectedRoles as $rId) { $pdo->prepare("INSERT INTO employee_roles (emp_id, role_id) VALUES (?, ?)")->execute([$eId, $rId]); }
+            $msg = "تم تحديث بيانات الموظف بنجاح."; $msgType = "success";
+        } catch (Exception $e) { $msg = "خطأ في التحديث."; $msgType = "error"; }
     }
 
-    // 3. إيقاف / تفعيل الموظف
+    // 3. المنع الذكي عند الإيقاف
     if (isset($_POST['toggle_status'])) {
         $eId = $_POST['target_emp_id'];
-        $pdo->prepare("UPDATE company_employee SET is_active = NOT is_active WHERE emp_id = ?")->execute([$eId]);
-        $msg = "تم تحديث حالة الموظف بنجاح.";
-        $msgType = "success";
-    }
-
-    // 4. حذف سجل الموظف
-    if (isset($_POST['delete_employee'])) {
-        $eId = $_POST['target_emp_id'];
-        try {
-            $pdo->prepare("DELETE FROM company_employee WHERE emp_id = ?")->execute([$eId]);
-            $msg = "تم حذف سجل الموظف بنجاح.";
-            $msgType = "success";
-        } catch (PDOException $e) {
-            // في حال وجود معاملات مرتبطة به، نقوم بتجميد حسابه بأمان دون إفساد قاعدة البيانات
-            $pdo->prepare("UPDATE company_employee SET is_active = 0 WHERE emp_id = ?")->execute([$eId]);
-            $msg = "تم إيقاف حساب الموظف، لا يمكن حذفه نهائياً لوجود مهام مرتبطة بسجلاته.";
-            $msgType = "warning";
+        $stmt = $pdo->prepare("SELECT is_active, active_tasks_count FROM company_employee WHERE emp_id = ?");
+        $stmt->execute([$eId]);
+        $empInfo = $stmt->fetch();
+        if ($empInfo['is_active'] == 1 && $empInfo['active_tasks_count'] > 0) {
+            $msg = "لا يمكنك إيقاف الموظف لوجود مهام نشطة لديه. أعد توزيع مهامه أولاً."; $msgType = "warning";
+        } else {
+            $pdo->prepare("UPDATE company_employee SET is_active = NOT is_active WHERE emp_id = ?")->execute([$eId]);
+            $msg = "تم تغيير حالة الموظف بنجاح."; $msgType = "success";
         }
     }
+
+    // 4. توجيه إنذار للموظفين المتأخرين
+    if (isset($_POST['send_warning'])) {
+        $msg = "تم إرسال إنذار رسمي للموظف المتأخر."; $msgType = "success";
+    }
+
+    // 5. التوزيع الجغرافي الإقليمي الآلي (لطلب واحد)
+    if (isset($_POST['dispatch_unassigned'])) {
+        $appId = $_POST['app_id']; $cityId = $_POST['cty_id']; $reqRole = $_POST['req_role']; 
+        $bestTechStmt = $pdo->prepare("
+            SELECT ce.emp_id, ce.cty_id, c.cty_name 
+            FROM company_employee ce
+            JOIN employee_roles er ON ce.emp_id = er.emp_id JOIN system_role sr ON er.role_id = sr.role_id JOIN city c ON ce.cty_id = c.cty_id
+            WHERE ce.is_active = 1 AND sr.role_name = ? AND c.reg_id = (SELECT reg_id FROM city WHERE cty_id = ?)
+            ORDER BY (ce.cty_id = ?) DESC, ce.active_tasks_count ASC LIMIT 1
+        ");
+        $bestTechStmt->execute([$reqRole, $cityId, $cityId]);
+        $assigned = $bestTechStmt->fetch();
+
+        if ($assigned) {
+            if ($reqRole == 'Inspection Technician') { $pdo->prepare("INSERT INTO field_inspection (app_id, emp_id) VALUES (?, ?)")->execute([$appId, $assigned['emp_id']]); } 
+            else { $pdo->prepare("INSERT INTO installation_task (app_id, emp_id) VALUES (?, ?)")->execute([$appId, $assigned['emp_id']]); }
+            $pdo->prepare("UPDATE company_employee SET active_tasks_count = active_tasks_count + 1 WHERE emp_id = ?")->execute([$assigned['emp_id']]);
+            $locationNote = ($assigned['cty_id'] == $cityId) ? "في نفس المدينة" : "في مدينة مجاورة (".$assigned['cty_name'].")";
+            $msg = "تم التوزيع الآلي بنجاح! أسندت المهمة لفني " . $locationNote . "."; $msgType = "success";
+        } else { 
+            $msg = "تنبيه: لم يعثر النظام على أي فني متاح في المنطقة. الرجاء إسناد المهمة يدوياً."; $msgType = "warning"; 
+        }
+    }
+
+    // 5-ب. التوزيع الجغرافي الآلي لكل المهام غير المسندة دفعة واحدة
+    if (isset($_POST['dispatch_all_unassigned'])) {
+        $tasksToDispatch = $pdo->query("
+            SELECT a.app_id, a.app_status, a.cty_id
+            FROM application a
+            LEFT JOIN field_inspection fi ON a.app_id = fi.app_id
+            WHERE (a.app_status = 'Pending_Inspection' AND fi.insp_id IS NULL)
+        ")->fetchAll(PDO::FETCH_ASSOC);
+
+        $successCount = 0; $failCount = 0;
+        foreach ($tasksToDispatch as $t) {
+            $reqRole = ($t['app_status'] == 'Pending_Inspection') ? 'Inspection Technician' : 'Installation Technician';
+            $bestTechStmt = $pdo->prepare("
+                SELECT ce.emp_id, ce.cty_id, c.cty_name 
+                FROM company_employee ce
+                JOIN employee_roles er ON ce.emp_id = er.emp_id JOIN system_role sr ON er.role_id = sr.role_id JOIN city c ON ce.cty_id = c.cty_id
+                WHERE ce.is_active = 1 AND sr.role_name = ? AND c.reg_id = (SELECT reg_id FROM city WHERE cty_id = ?)
+                ORDER BY (ce.cty_id = ?) DESC, ce.active_tasks_count ASC LIMIT 1
+            ");
+            $bestTechStmt->execute([$reqRole, $t['cty_id'], $t['cty_id']]);
+            $assigned = $bestTechStmt->fetch();
+
+            if ($assigned) {
+                if ($reqRole == 'Inspection Technician') { $pdo->prepare("INSERT INTO field_inspection (app_id, emp_id) VALUES (?, ?)")->execute([$t['app_id'], $assigned['emp_id']]); }
+                else { $pdo->prepare("INSERT INTO installation_task (app_id, emp_id) VALUES (?, ?)")->execute([$t['app_id'], $assigned['emp_id']]); }
+                $pdo->prepare("UPDATE company_employee SET active_tasks_count = active_tasks_count + 1 WHERE emp_id = ?")->execute([$assigned['emp_id']]);
+                $successCount++;
+            } else {
+                $failCount++;
+            }
+        }
+
+        if ($successCount > 0 && $failCount == 0) {
+            $msg = "تم إسناد جميع المهام غير المسندة آلياً بنجاح (" . $successCount . " مهمة)."; $msgType = "success";
+        } elseif ($successCount > 0 && $failCount > 0) {
+            $msg = "تم إسناد " . $successCount . " مهمة بنجاح، بينما تعذر إيجاد فني متاح لـ " . $failCount . " مهمة. يمكنك إسنادها يدوياً."; $msgType = "warning";
+        } elseif ($successCount == 0 && $failCount > 0) {
+            $msg = "تعذر إسناد أي مهمة آلياً، لا يوجد فنيون متاحون حالياً. الرجاء الإسناد اليدوي."; $msgType = "warning";
+        } else {
+            $msg = "لا توجد أي مهام غير مسندة حالياً."; $msgType = "success";
+        }
+    }
+
+    // 6. الإسناد اليدوي (Manual Assignment) من قبل المدير
+    if (isset($_POST['manual_assign'])) {
+        $appId = $_POST['app_id'];
+        $manualEmpId = $_POST['manual_emp_id'];
+        $reqRole = $_POST['req_role'];
+
+        if (empty($manualEmpId)) {
+            $msg = "خطأ: الرجاء اختيار الفني من القائمة."; $msgType = "error";
+        } else {
+            if ($reqRole == 'Inspection Technician') { $pdo->prepare("INSERT INTO field_inspection (app_id, emp_id) VALUES (?, ?)")->execute([$appId, $manualEmpId]); } 
+            else { $pdo->prepare("INSERT INTO installation_task (app_id, emp_id) VALUES (?, ?)")->execute([$appId, $manualEmpId]); }
+            $pdo->prepare("UPDATE company_employee SET active_tasks_count = active_tasks_count + 1 WHERE emp_id = ?")->execute([$manualEmpId]);
+            $msg = "تم إسناد المهمة للفني يدوياً بنجاح."; $msgType = "success";
+        }
+    }
+
+    // 7. إعادة التوزيع الآلي للمهام المتراكمة
+    if (isset($_POST['reassign_tasks'])) {
+        $fromEmpId = $_POST['target_emp_id'];
+        $stmt = $pdo->prepare("SELECT cty_id FROM company_employee WHERE emp_id = ?");
+        $stmt->execute([$fromEmpId]);
+        $srcCtyId = $stmt->fetchColumn();
+
+        $fiStmt = $pdo->prepare("SELECT insp_id FROM field_inspection WHERE emp_id = ? AND inspection_result IS NULL");
+        $fiStmt->execute([$fromEmpId]);
+        $fiTasks = $fiStmt->fetchAll();
+        
+        foreach($fiTasks as $fi) {
+            $bestTechStmt = $pdo->prepare("
+                SELECT ce.emp_id FROM company_employee ce JOIN employee_roles er ON ce.emp_id = er.emp_id JOIN system_role sr ON er.role_id = sr.role_id JOIN city c ON ce.cty_id = c.cty_id
+                WHERE ce.is_active = 1 AND ce.emp_id != ? AND sr.role_name = 'Inspection Technician'
+                ORDER BY (ce.cty_id = ?) DESC, (c.reg_id = (SELECT reg_id FROM city WHERE cty_id = ?)) DESC, ce.active_tasks_count ASC LIMIT 1
+            ");
+            $bestTechStmt->execute([$fromEmpId, $srcCtyId, $srcCtyId]);
+            $bestTech = $bestTechStmt->fetchColumn();
+
+            if($bestTech) {
+                $pdo->prepare("UPDATE field_inspection SET emp_id = ? WHERE insp_id = ?")->execute([$bestTech, $fi['insp_id']]);
+                $pdo->prepare("UPDATE company_employee SET active_tasks_count = active_tasks_count + 1 WHERE emp_id = ?")->execute([$bestTech]);
+                $pdo->prepare("UPDATE company_employee SET active_tasks_count = active_tasks_count - 1 WHERE emp_id = ?")->execute([$fromEmpId]);
+            }
+        }
+        $msg = "تم سحب المهام وإعادة توزيعها آلياً."; $msgType = "success";
+    }
 }
 
 // =========================================================
-// جلب البيانات الشاملة لإدارة الموظفين واللوحة التشغيلية
+// جلب البيانات وإعداد التقارير والإحصائيات الجديدة
 // =========================================================
-try {
-    $cities = $pdo->query("SELECT * FROM city WHERE cty_name NOT IN ('الربيعية', 'الشماسية', 'الربيعيه', 'الشماسيه', 'رفحاء')")->fetchAll(PDO::FETCH_ASSOC);
-} catch (Exception $e) {
-    $pdo->exec("CREATE TABLE IF NOT EXISTS city (cty_id INT PRIMARY KEY AUTO_INCREMENT, cty_name VARCHAR(100)); INSERT IGNORE INTO city (cty_id, cty_name) VALUES (1, 'الرياض'), (2, 'جدة'), (3, 'الدمام');");
-    $cities = $pdo->query("SELECT * FROM city WHERE cty_name NOT IN ('الربيعية', 'الشماسية', 'الربيعيه', 'الشماسيه', 'رفحاء')")->fetchAll(PDO::FETCH_ASSOC);
+$cities = $pdo->query("SELECT * FROM city")->fetchAll(PDO::FETCH_ASSOC);
+$rolesList = $pdo->query("SELECT MIN(role_id) as role_id, role_name FROM system_role GROUP BY role_name")->fetchAll(PDO::FETCH_ASSOC);
+
+// دالة موحّدة لتسمية الصلاحيات بالعربي (تُستخدم في نموذج الإضافة ونافذة التعديل)
+function roleLabelAr($roleName) {
+    switch ($roleName) {
+        case 'Admin': return 'مدير النظام';
+        case 'Auditor': return 'مدقق طلبات';
+        case 'Inspection Technician': return 'فني فحص';
+        case 'Installation Technician': return 'فني تركيب';
+        default: return $roleName;
+    }
 }
 
-$empCount = $pdo->query("SELECT COUNT(*) FROM company_employee")->fetchColumn();
+// دالة موحّدة لتسمية حالة الطلب بالعربي (تُستخدم في تقارير الطلبات)
+function appStatusLabelAr($status) {
+    $map = [
+        'Pending_Review'     => 'قيد المراجعة',
+        'Pending_Inspection' => 'بانتظار الفحص',
+        'Pending_Billing'    => 'بانتظار السداد',
+        'In_Progress'        => 'جاري التركيب',
+        'Completed'          => 'مكتمل',
+        'Rejected'           => 'مرفوض'
+    ];
+    return $map[$status] ?? $status;
+}
 
-// جلب تفاصيل الموظفين مع أدوارهم
+// إحصائيات عامة للنظام
+$totalApps = $pdo->query("SELECT COUNT(*) FROM application")->fetchColumn();
+$completedApps = $pdo->query("SELECT COUNT(*) FROM application WHERE app_status = 'Completed'")->fetchColumn();
+$pendingApps = $pdo->query("SELECT COUNT(*) FROM application WHERE app_status != 'Completed' AND app_status != 'Rejected'")->fetchColumn();
+
+// بيانات الموظفين الشاملة
 $employeesData = $pdo->query("
-    SELECT ce.emp_id, ce.emp_name, ce.emp_email, ce.active_tasks_count, ce.is_active, ce.cty_id, c.cty_name,
-           GROUP_CONCAT(DISTINCT sr.role_name SEPARATOR ',') as roles,
-           GROUP_CONCAT(DISTINCT sr.role_id SEPARATOR ',') as role_ids
-    FROM company_employee ce
-    LEFT JOIN city c ON ce.cty_id = c.cty_id
-    LEFT JOIN employee_roles er ON ce.emp_id = er.emp_id
-    LEFT JOIN system_role sr ON er.role_id = sr.role_id
+    SELECT ce.emp_id, ce.emp_name, ce.emp_email, ce.active_tasks_count, ce.is_active, ce.cty_id, c.cty_name, 
+           GROUP_CONCAT(DISTINCT sr.role_name SEPARATOR ',') as roles, GROUP_CONCAT(DISTINCT sr.role_id SEPARATOR ',') as role_ids
+    FROM company_employee ce LEFT JOIN city c ON ce.cty_id = c.cty_id
+    LEFT JOIN employee_roles er ON ce.emp_id = er.emp_id LEFT JOIN system_role sr ON er.role_id = sr.role_id
     GROUP BY ce.emp_id ORDER BY ce.emp_id DESC
 ")->fetchAll(PDO::FETCH_ASSOC);
 
-// جلب الصلاحيات المتاحة
-$rolesList = $pdo->query("SELECT MIN(role_id) as role_id, role_name FROM system_role GROUP BY role_name")->fetchAll(PDO::FETCH_ASSOC);
+// قائمة الفنيين النشطين (تستخدم في الإسناد اليدوي)
+$activeTechs = $pdo->query("
+    SELECT ce.emp_id, ce.emp_name, c.cty_name, sr.role_name
+    FROM company_employee ce JOIN city c ON ce.cty_id = c.cty_id
+    JOIN employee_roles er ON ce.emp_id = er.emp_id JOIN system_role sr ON er.role_id = sr.role_id
+    WHERE ce.is_active = 1 AND sr.role_name LIKE '%Technician%'
+")->fetchAll(PDO::FETCH_ASSOC);
+
+// تقرير الأداء التفصيلي المطور (يشمل تفاصيل كل مهمة)
+$detailedPerformance = $pdo->query("
+    SELECT ce.emp_id, ce.emp_name, GROUP_CONCAT(DISTINCT sr.role_name SEPARATOR ',') as roles, ce.active_tasks_count,
+           (SELECT COUNT(*) FROM field_inspection fi WHERE fi.emp_id = ce.emp_id AND fi.inspection_result IS NOT NULL) as fi_completed,
+           (SELECT COUNT(*) FROM installation_task it WHERE it.emp_id = ce.emp_id AND it.initial_reading IS NOT NULL) as it_completed,
+           (SELECT COUNT(*) FROM application_history ah WHERE ah.changed_by = ce.emp_id) as audits_completed
+    FROM company_employee ce
+    JOIN employee_roles er ON ce.emp_id = er.emp_id JOIN system_role sr ON er.role_id = sr.role_id
+    WHERE ce.is_active = 1 AND sr.role_name != 'Admin'
+    GROUP BY ce.emp_id
+")->fetchAll(PDO::FETCH_ASSOC);
+
+// الموظفون ذوو المهام المتراكمة (العتبة الآن 8 مهام نشطة بدل 3)
+$overloadedEmps = array_filter($detailedPerformance, function($e) { return $e['active_tasks_count'] >= OVERLOAD_THRESHOLD; });
+
+// المهام غير المسندة (التي فشل النظام في توزيعها)
+$unassignedTasks = $pdo->query("
+    SELECT a.app_id, a.app_status, a.cty_id, c.cty_name, r.reg_name, s.srv_name
+    FROM application a JOIN city c ON a.cty_id = c.cty_id JOIN region r ON c.reg_id = r.reg_id JOIN service_type s ON a.srv_id = s.srv_id
+    LEFT JOIN field_inspection fi ON a.app_id = fi.app_id
+    WHERE (a.app_status = 'Pending_Inspection' AND fi.insp_id IS NULL)
+")->fetchAll(PDO::FETCH_ASSOC);
+
+// المهام التي تعمل خارج المنطقة
+$outOfRegionTasks = $pdo->query("
+    SELECT a.app_id, s.srv_name, c_app.cty_name as cust_city, r_app.reg_name as cust_region,
+           ce.emp_name, c_emp.cty_name as emp_city, r_emp.reg_name as emp_region
+    FROM field_inspection fi JOIN application a ON fi.app_id = a.app_id JOIN service_type s ON a.srv_id = s.srv_id
+    JOIN city c_app ON a.cty_id = c_app.cty_id JOIN region r_app ON c_app.reg_id = r_app.reg_id
+    JOIN company_employee ce ON fi.emp_id = ce.emp_id JOIN city c_emp ON ce.cty_id = c_emp.cty_id JOIN region r_emp ON c_emp.reg_id = r_emp.reg_id
+    WHERE r_app.reg_id != r_emp.reg_id AND fi.inspection_result IS NULL
+")->fetchAll(PDO::FETCH_ASSOC);
+
+// الأرشيف الأمني (للاطلاع فقط)
+$rejectedApps = $pdo->query("
+    SELECT ah.app_id, ah.rejection_reason, ah.change_date, ce.emp_name as auditor_name, a.app_status, a.deed_no, c.full_name as customer_name
+    FROM application_history ah JOIN application a ON ah.app_id = a.app_id
+    LEFT JOIN company_employee ce ON ah.changed_by = ce.emp_id LEFT JOIN customer c ON a.cust_id = c.cust_id
+    WHERE ah.status = 'Rejected' OR a.app_status = 'Rejected' ORDER BY ah.change_date DESC LIMIT 20
+")->fetchAll(PDO::FETCH_ASSOC);
 
 // =========================================================
-// الرقابة والتقارير المتقدمة (التبويب الجديد)
+// تقارير الطلبات والموظفين الشاملة (صفحة التقارير الجديدة)
 // =========================================================
-$reportStats = [
-    'total_paid' => 0,
-    'total_meters' => 0,
-    'total_unified' => 0,
-    'pending_review' => 0,
-    'pending_inspection' => 0,
-    'pending_billing' => 0,
-    'completed' => 0,
-];
 
-try {
-    $reportStats['total_paid'] = $pdo->query("SELECT SUM(amount) FROM invoice WHERE payment_status = 'Paid'")->fetchColumn() ?? 0;
-    $reportStats['total_meters'] = $pdo->query("SELECT COUNT(*) FROM meter")->fetchColumn() ?? 0;
-    $reportStats['total_unified'] = $pdo->query("SELECT COUNT(*) FROM unified_account")->fetchColumn() ?? 0;
-    
-    // إحصائيات الطلبات
-    $appStatusCounts = $pdo->query("SELECT app_status, COUNT(*) as count FROM application GROUP BY app_status")->fetchAll(PDO::FETCH_KEY_PAIR);
-    $reportStats['pending_review'] = $appStatusCounts['Pending_Review'] ?? 0;
-    $reportStats['pending_inspection'] = $appStatusCounts['Pending_Inspection'] ?? 0;
-    $reportStats['pending_billing'] = $appStatusCounts['Pending_Billing'] ?? 0;
-    $reportStats['completed'] = $appStatusCounts['Completed'] ?? 0;
-} catch (Exception $e) {
-    // معالجة صامتة
+// 1) توزيع الطلبات حسب الحالة التشغيلية
+$appsByStatus = $pdo->query("
+    SELECT app_status, COUNT(*) as cnt FROM application GROUP BY app_status ORDER BY cnt DESC
+")->fetchAll(PDO::FETCH_ASSOC);
+$maxStatusCnt = 1;
+foreach ($appsByStatus as $s) { $maxStatusCnt = max($maxStatusCnt, $s['cnt']); }
+
+// 2) توزيع الطلبات حسب نوع الخدمة
+$appsByService = $pdo->query("
+    SELECT s.srv_name, COUNT(*) as cnt
+    FROM application a JOIN service_type s ON a.srv_id = s.srv_id
+    GROUP BY s.srv_name ORDER BY cnt DESC
+")->fetchAll(PDO::FETCH_ASSOC);
+$maxServiceCnt = 1;
+foreach ($appsByService as $s) { $maxServiceCnt = max($maxServiceCnt, $s['cnt']); }
+
+// 3) أكثر 5 مدن من حيث عدد الطلبات
+$appsByCity = $pdo->query("
+    SELECT c.cty_name, COUNT(*) as cnt
+    FROM application a JOIN city c ON a.cty_id = c.cty_id
+    GROUP BY c.cty_name ORDER BY cnt DESC LIMIT 5
+")->fetchAll(PDO::FETCH_ASSOC);
+$maxCityCnt = 1;
+foreach ($appsByCity as $s) { $maxCityCnt = max($maxCityCnt, $s['cnt']); }
+
+// 4) إحصائية الرفض: رفض آلي عبر محرك DSS مقابل رفض بشري من قبل مدقق
+$rejectedAutoCount = $pdo->query("
+    SELECT COUNT(*) FROM application_history WHERE status = 'Rejected' AND changed_by IS NULL
+")->fetchColumn();
+$rejectedManualCount = $pdo->query("
+    SELECT COUNT(*) FROM application_history WHERE status = 'Rejected' AND changed_by IS NOT NULL
+")->fetchColumn();
+$totalRejected = $rejectedAutoCount + $rejectedManualCount;
+if ($totalRejected == 0) {
+    // لو الحالة الحالية للطلب هي المصدر الوحيد للرفض (بدون سجل تاريخ)، نعتمد على العدد الكلي
+    $totalRejected = $pdo->query("SELECT COUNT(*) FROM application WHERE app_status = 'Rejected'")->fetchColumn();
 }
 
-// جلب تاريخ العمليات وتتبع التأخير والرقابة (تاريخ تعديل الطلبات)
-$auditLog = [];
-try {
-    $auditLog = $pdo->query("
-        SELECT ah.hist_id, ah.status, ah.rejection_reason, ah.change_date, ah.app_id, ce.emp_name
-        FROM application_history ah
-        LEFT JOIN company_employee ce ON ah.changed_by = ce.emp_id
-        ORDER BY ah.change_date DESC LIMIT 15
-    ")->fetchAll(PDO::FETCH_ASSOC);
-} catch (Exception $e) {
-    // معالجة صامتة
-}
+// 5) معدل الإنجاز الزمني: عدد الطلبات المسجلة آخر 30 يوماً
+$appsLast30Days = $pdo->query("
+    SELECT COUNT(*) FROM application WHERE created_at >= (NOW() - INTERVAL 30 DAY)
+")->fetchColumn();
+
+// 6) إحصائيات الموظفين الشاملة
+$empTotalCount = count($employeesData);
+$empActiveCount = 0; $empInactiveCount = 0;
+foreach ($employeesData as $e) { $e['is_active'] ? $empActiveCount++ : $empInactiveCount++; }
+
+$empByRole = $pdo->query("
+    SELECT sr.role_name, COUNT(DISTINCT er.emp_id) as cnt
+    FROM employee_roles er JOIN system_role sr ON er.role_id = sr.role_id
+    GROUP BY sr.role_name ORDER BY cnt DESC
+")->fetchAll(PDO::FETCH_ASSOC);
+
+// 7) أكثر 5 موظفين إنجازاً (فحص + تركيب + تدقيق)
+$topPerformers = $detailedPerformance;
+usort($topPerformers, function($a, $b) {
+    $totalA = $a['fi_completed'] + $a['it_completed'] + $a['audits_completed'];
+    $totalB = $b['fi_completed'] + $b['it_completed'] + $b['audits_completed'];
+    return $totalB - $totalA;
+});
+$topPerformers = array_slice($topPerformers, 0, 5);
 
 ?>
 
@@ -183,536 +368,581 @@ try {
 <html lang="ar" dir="rtl">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>إدارة الموارد والرقابة الذكية | قطرة</title>
+    <title>لوحة المدير | قطرة</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800;900&display=swap" rel="stylesheet">
-    
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
     <style>
-        :root { 
-            --primary: #092e54; 
-            --secondary: #0b457f; 
-            --accent: #4492d4; 
-            --bg: #f4f6f9; 
-            --card-shadow: 0 4px 15px rgba(0,0,0,0.05);
-        }
-        body { font-family: 'Cairo', sans-serif; background-color: var(--bg); display: flex; min-height: 100vh; margin: 0; }
+        :root { --navy: #092e54; --blue: #0b457f; --light: #4492d4; --bg: #f8fafc; }
+        body { font-family: 'Cairo', sans-serif; background-color: var(--bg); margin: 0; padding: 0; display: flex; height: 100vh; overflow: hidden; }
         
-        /* تصميم الشريط الجانبي */
-        .sidebar { width: 280px; background: var(--primary); color: white; display: flex; flex-direction: column; padding: 20px 0; box-shadow: -2px 0 10px rgba(0,0,0,0.1); z-index: 10; }
-        .sidebar-brand { text-align: center; font-size: 1.8rem; font-weight: 800; padding-bottom: 20px; border-bottom: 1px solid rgba(255,255,255,0.1); margin-bottom: 20px; }
-        .sidebar-brand i { color: #7dd3fc; margin-left: 10px; }
-        .nav-link-custom { color: #cbd3da; padding: 15px 25px; font-weight: 700; text-decoration: none; display: flex; align-items: center; gap: 15px; transition: 0.3s; cursor: pointer; border-right: 4px solid transparent; }
-        .nav-link-custom:hover, .nav-link-custom.active { background: var(--secondary); color: white; border-right-color: var(--accent); }
+        .sidebar { width: 280px; background: var(--navy); color: white; display: flex; flex-direction: column; box-shadow: -4px 0 15px rgba(0,0,0,0.1); z-index: 100; }
+        .sidebar-header { padding: 30px 20px; text-align: center; border-bottom: 1px solid rgba(255,255,255,0.1); }
+        .sidebar-header i { font-size: 2.5rem; color: #7dd3fc; margin-bottom: 10px; }
+        .sidebar-nav { flex: 1; padding: 20px 0; overflow-y: auto; }
+        .nav-item { padding: 15px 25px; color: #cbd5e1; display: flex; align-items: center; gap: 15px; text-decoration: none; font-weight: 700; transition: 0.3s; cursor: pointer; border-right: 4px solid transparent; white-space: nowrap; }
+        .nav-item i { flex-shrink: 0; width: 20px; text-align: center; }
+        .nav-item span.nav-text { overflow: hidden; text-overflow: ellipsis; }
+        .nav-item:hover, .nav-item.active { background: rgba(255,255,255,0.05); color: white; border-right-color: #7dd3fc; }
         
-        .main-content { flex: 1; padding: 35px; overflow-y: auto; }
+        .main-wrapper { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+        .topbar { background: white; padding: 15px 30px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 2px 10px rgba(0,0,0,0.05); z-index: 50; }
+        .content-area { flex: 1; padding: 30px; overflow-y: auto; background: var(--bg); }
         
-        /* البطاقات التشغيلية */
-        .corporate-card { background: white; border-radius: 16px; border: 1px solid #e2e8f0; padding: 25px; box-shadow: var(--card-shadow); margin-bottom: 25px; transition: 0.3s; }
-        .corporate-card:hover { transform: translateY(-2px); box-shadow: 0 8px 25px rgba(0,0,0,0.08); }
-        .card-header-title { font-weight: 900; color: var(--primary); margin-bottom: 25px; border-bottom: 2px solid #f1f5f9; padding-bottom: 15px; display: flex; justify-content: space-between; align-items: center; }
+        .admin-card { background: white; border-radius: 16px; padding: 25px; box-shadow: 0 4px 15px rgba(0,0,0,0.03); margin-bottom: 25px; border: 1px solid #e2e8f0; }
+        .card-title { color: var(--navy); font-weight: 900; font-size: 1.2rem; margin-bottom: 20px; display: flex; align-items: center; gap: 10px; border-bottom: 2px solid #f1f5f9; padding-bottom: 15px; }
         
-        /* شارات التحذير والتحميل الزائد للفنيين */
-        .workload-warning { background: #fff3cd; border: 1px solid #ffe69c; color: #856404; animation: blinkWarning 1.5s infinite; }
-        @keyframes blinkWarning { 0% { opacity: 0.8; } 50% { opacity: 1; } 100% { opacity: 0.8; } }
+        .table th { background: #f8fafc; color: #64748b; font-weight: 800; padding: 15px; }
+        .table td { padding: 15px; vertical-align: middle; font-weight: 700; color: #334155; }
         
-        .form-label { font-weight: 800; color: #495057; font-size: 0.9rem; }
-        .form-control, .form-select { border-radius: 10px; border: 2px solid #e2e8f0; padding: 12px 15px; font-weight: 600; transition: 0.3s; }
-        .form-control:focus, .form-select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px rgba(68,146,212,0.12); outline: none; }
+        .page-view { display: none; animation: fadeIn 0.4s; }
+        .page-view.active { display: block; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
         
-        .checkbox-group { display: flex; flex-wrap: wrap; gap: 10px; }
-        .checkbox-group label { background: #f8f9fa; border: 2px solid #e2e8f0; padding: 8px 15px; border-radius: 8px; cursor: pointer; font-weight: 700; font-size: 0.85rem; transition: 0.2s; }
-        .checkbox-group input[type="checkbox"] { display: none; }
-        .checkbox-group input[type="checkbox"]:checked + label { background: #e3f2fd; border-color: var(--accent); color: var(--secondary); }
-        
-        .btn-brand { background: var(--secondary); color: white; border: none; padding: 14px 20px; border-radius: 10px; font-weight: 800; width: 100%; transition: 0.3s; }
-        .btn-brand:hover { background: var(--primary); }
-        
-        /* جداول عصرية */
-        .table th { background: #f8fafc; color: var(--primary); font-weight: 800; font-size: 0.85rem; padding: 18px 15px; border-bottom: 2px solid #e2e8f0; }
-        .table td { padding: 18px 15px; vertical-align: middle; font-weight: 700; border-bottom: 1px solid #f1f5f9; }
-        .badge-role { padding: 6px 12px; border-radius: 6px; font-size: 0.75rem; background: #f1f5f9; color: var(--primary); margin: 2px; display: inline-flex; align-items: center; gap: 5px; font-weight: 700; border: 1px solid #e2e8f0; }
-        .status-badge { padding: 6px 14px; border-radius: 50px; font-size: 0.75rem; font-weight: 800; }
-        
-        .btn-action { background: none; border: none; padding: 6px 10px; border-radius: 6px; font-size: 1rem; transition: 0.2s; }
-        .btn-edit { color: var(--accent); } .btn-edit:hover { background: #e3f2fd; }
-        .btn-suspend { color: #fd7e14; } .btn-suspend:hover { background: #fff3cd; }
-        .btn-delete { color: #dc3545; } .btn-delete:hover { background: #fef2f2; }
-        
-        /* تبويبات لوحة التحكم */
-        .tab-panel { display: none; }
-        .tab-panel.active { display: block; animation: tabFade 0.4s ease-in-out; }
-        @keyframes tabFade { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-        
-        /* مؤشرات إحصائية */
-        .kpi-card { border-radius: 16px; padding: 25px; border: 1px solid #e2e8f0; background: white; text-align: right; display: flex; align-items: center; justify-content: space-between; box-shadow: var(--card-shadow); }
-        .kpi-icon { width: 60px; height: 60px; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 1.8rem; }
-        .kpi-val { font-size: 2rem; font-weight: 900; color: var(--primary); line-height: 1.1; margin-bottom: 5px; }
-        .kpi-lbl { font-size: 0.85rem; font-weight: 700; color: #64748b; }
-        
-        /* أشرطة التقدم */
-        .progress-bar-custom { height: 10px; border-radius: 50px; background: #e2e8f0; overflow: hidden; margin-top: 10px; }
-        .progress-bar-fill { height: 100%; border-radius: 50px; }
+        .btn-brand { background: var(--blue); color: white; border: none; padding: 12px 20px; border-radius: 10px; font-weight: 800; width: 100%; transition: 0.3s; }
+        .btn-brand:hover { background: var(--navy); color: white; }
+
+        .mini-stat { background: white; border-radius: 14px; padding: 18px 20px; border: 1px solid #e2e8f0; text-align: center; }
+        .mini-stat h3 { font-weight: 900; margin: 0; }
+        .mini-stat p { margin: 4px 0 0; color: #64748b; font-weight: 700; font-size: 0.85rem; }
+
+        .bar-row { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+        .bar-label { width: 150px; flex-shrink: 0; font-weight: 800; color: #334155; font-size: 0.9rem; }
+        .bar-track { flex: 1; background: #f1f5f9; border-radius: 8px; height: 22px; overflow: hidden; position: relative; }
+        .bar-fill { height: 100%; border-radius: 8px; display: flex; align-items: center; justify-content: flex-end; padding: 0 10px; color: white; font-weight: 800; font-size: 0.8rem; transition: width 0.6s ease; white-space: nowrap; }
     </style>
 </head>
 <body>
 
-    <!-- الشريط الجانبي الفخم -->
     <div class="sidebar">
-        <div class="sidebar-brand">
-            <i class="fa-solid fa-droplet"></i>قــطــرة
-            <div class="text-[10px] font-bold text-info opacity-75 mt-1">منصة الرقابة والتشغيل الذكي</div>
+        <div class="sidebar-header">
+            <i class="fa-solid fa-droplet"></i>
+            <h4 class="fw-black m-0">نظام الإدارة</h4>
+            <div class="small mt-1 text-info">الرقابة والتشغيل الذكي</div>
         </div>
-        
-        <a class="nav-link-custom active" onclick="switchPanel('hr-management', this)">
-            <i class="fa-solid fa-users-gear"></i> إدارة الموارد البشرية
-        </a>
-        <a class="nav-link-custom" onclick="switchPanel('supervision-hub', this)">
-            <i class="fa-solid fa-chart-line"></i> لوحة التقارير والرقابة
-        </a>
-        
-        <div style="margin-top: auto;">
-            <a href="logout.php" class="nav-link-custom text-danger">
-                <i class="fa-solid fa-power-off"></i> تسجيل الخروج
+        <div class="sidebar-nav">
+            <a class="nav-item active" onclick="openPage('page-stats', this)"><i class="fa-solid fa-chart-pie"></i><span class="nav-text">نظرة عامة</span></a>
+            <a class="nav-item" onclick="openPage('page-reports', this)"><i class="fa-solid fa-chart-column"></i><span class="nav-text">تقارير الطلبات</span></a>
+            <a class="nav-item" onclick="openPage('page-performance', this)"><i class="fa-solid fa-ranking-star"></i><span class="nav-text">تقارير الأداء</span></a>
+            <a class="nav-item" onclick="openPage('page-alerts', this)">
+                <i class="fa-solid fa-triangle-exclamation"></i><span class="nav-text">مهام وتوجيه</span>
+                <?php $totalAlerts = count($outOfRegionTasks) + count($unassignedTasks) + count($overloadedEmps); if($totalAlerts > 0): ?><span class="badge bg-danger ms-auto"><?= $totalAlerts; ?></span><?php endif; ?>
             </a>
+            <a class="nav-item" onclick="openPage('page-archive', this)"><i class="fa-solid fa-shield-halved"></i><span class="nav-text">أرشيف المرفوضات</span></a>
+            <a class="nav-item" onclick="openPage('page-hr', this)"><i class="fa-solid fa-users-gear"></i><span class="nav-text">شؤون الموظفين</span></a>
+        </div>
+        <div class="p-3 border-top border-secondary">
+            <a href="employee_dashboard.php" class="btn btn-outline-light w-100 fw-bold rounded-pill"><i class="fa-solid fa-arrow-right-from-bracket fa-flip-horizontal me-2"></i> شاشة التوجيه</a>
         </div>
     </div>
 
-    <!-- المحتوى الرئيسي للوحة -->
-    <div class="main-content">
-        <div class="d-flex justify-content-between align-items-center mb-4">
-            <div>
-                <h2 class="fw-bold" style="color: var(--primary);" id="page-title">إدارة الموارد البشرية</h2>
-                <p class="text-muted fw-bold m-0" id="page-desc">البوابة التشغيلية الكاملة للتحكم في حسابات الموظفين وصلاحياتهم.</p>
-            </div>
-            <div class="text-end">
-                <div class="fw-bold"><?= htmlspecialchars($_SESSION['emp_name']); ?></div>
-                <span class="badge bg-secondary fw-black mt-1">مدير النظام (Admin)</span>
+    <div class="main-wrapper">
+        <div class="topbar">
+            <div><h4 class="fw-black text-dark m-0" id="topbar-title">نظرة عامة والإحصائيات</h4></div>
+            <div class="d-flex align-items-center gap-3">
+                <span class="fw-bold text-secondary">مرحباً، م. <?= htmlspecialchars($_SESSION['emp_name']); ?></span>
+                <div class="bg-primary text-white rounded-circle d-flex justify-content-center align-items-center" style="width: 40px; height: 40px;"><i class="fa-solid fa-user-shield"></i></div>
             </div>
         </div>
 
-        <?php if($msg): ?>
-            <div class="alert alert-<?= $msgType ?> fw-bold alert-dismissible fade show" role="alert">
-                <i class="fa-solid fa-circle-info me-2"></i><?= $msg; ?>
-                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
-            </div>
-        <?php endif; ?>
+        <div class="content-area">
+            <?php if($msg): ?>
+                <script>
+                    document.addEventListener('DOMContentLoaded', function() {
+                        Swal.fire({ icon: '<?= $msgType ?>', title: 'إشعار النظام', text: '<?= addslashes($msg) ?>', confirmButtonColor: '#0b457f' });
+                    });
+                </script>
+            <?php endif; ?>
 
-        <!-- ========================================================= -->
-        <!-- التبويب 1: إدارة الموارد البشرية (CRUD الأصلي) -->
-        <!-- ========================================================= -->
-        <div id="hr-management" class="tab-panel active">
-            <div class="row g-4">
-                
-                <!-- نموذج إضافة موظف جديد -->
-                <div class="col-lg-3">
-                    <div class="corporate-card h-100">
-                        <div class="card-header-title">
-                            <span><i class="fa-solid fa-user-plus me-1"></i> إضافة موظف جديد</span>
+            <!-- الصفحة 1: الإحصائيات (تمت زيادة الإحصائيات) -->
+            <div id="page-stats" class="page-view active">
+                <div class="row g-4 mb-4">
+                    <div class="col-md-3">
+                        <div class="admin-card text-center" style="border-bottom: 5px solid #0dcaf0;">
+                            <i class="fa-solid fa-file-lines fs-1 text-info mb-3"></i>
+                            <h2 class="fw-black m-0"><?= $totalApps; ?></h2>
+                            <p class="text-muted fw-bold m-0">إجمالي الطلبات المستلمة</p>
                         </div>
-                        <form method="POST">
-                            <div class="mb-3">
-                                <label class="form-label">اسم الموظف رباعياً</label>
-                                <input type="text" name="emp_name" class="form-control" placeholder="أدخل اسم الموظف" required>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="admin-card text-center" style="border-bottom: 5px solid #198754;">
+                            <i class="fa-solid fa-check-double fs-1 text-success mb-3"></i>
+                            <h2 class="fw-black text-success m-0"><?= $completedApps; ?></h2>
+                            <p class="text-muted fw-bold m-0">طلبات منجزة بالكامل</p>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="admin-card text-center" style="border-bottom: 5px solid #ffc107;">
+                            <i class="fa-solid fa-spinner fs-1 text-warning mb-3"></i>
+                            <h2 class="fw-black text-warning m-0"><?= $pendingApps; ?></h2>
+                            <p class="text-muted fw-bold m-0">طلبات قيد المعالجة</p>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="admin-card text-center" style="border-bottom: 5px solid #dc3545;">
+                            <i class="fa-solid fa-triangle-exclamation fs-1 text-danger mb-3"></i>
+                            <h2 class="fw-black text-danger m-0"><?= count($unassignedTasks); ?></h2>
+                            <p class="text-muted fw-bold m-0">مهام تحتاج إسناد</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- الصفحة الجديدة: تقارير الطلبات والموظفين الشاملة -->
+            <div id="page-reports" class="page-view">
+
+                <!-- إحصائيات سريعة عامة -->
+                <div class="row g-3 mb-4">
+                    <div class="col-md-3"><div class="mini-stat"><h3 class="text-primary"><?= $totalApps; ?></h3><p>إجمالي الطلبات</p></div></div>
+                    <div class="col-md-3"><div class="mini-stat"><h3 class="text-info"><?= $appsLast30Days; ?></h3><p>طلبات آخر 30 يوماً</p></div></div>
+                    <div class="col-md-3"><div class="mini-stat"><h3 class="text-danger"><?= $totalRejected; ?></h3><p>إجمالي المرفوضات</p></div></div>
+                    <div class="col-md-3"><div class="mini-stat"><h3 class="text-success"><?= $empActiveCount; ?> / <?= $empTotalCount; ?></h3><p>موظفون نشطون / الإجمالي</p></div></div>
+                </div>
+
+                <div class="row g-4">
+                    <!-- توزيع الطلبات حسب الحالة -->
+                    <div class="col-lg-6">
+                        <div class="admin-card h-100">
+                            <div class="card-title text-primary"><i class="fa-solid fa-diagram-project bg-primary text-white rounded p-2"></i> توزيع الطلبات حسب الحالة التشغيلية</div>
+                            <?php foreach($appsByStatus as $s): 
+                                $pct = round(($s['cnt'] / $maxStatusCnt) * 100);
+                                $color = $s['app_status'] == 'Completed' ? '#059669' : ($s['app_status'] == 'Rejected' ? '#dc2626' : '#4492d4');
+                            ?>
+                                <div class="bar-row">
+                                    <div class="bar-label"><?= appStatusLabelAr($s['app_status']); ?></div>
+                                    <div class="bar-track"><div class="bar-fill" style="width: <?= max($pct, 8) ?>%; background: <?= $color ?>;"><?= $s['cnt']; ?></div></div>
+                                </div>
+                            <?php endforeach; ?>
+                        </div>
+                    </div>
+
+                    <!-- توزيع الطلبات حسب نوع الخدمة -->
+                    <div class="col-lg-6">
+                        <div class="admin-card h-100">
+                            <div class="card-title text-info"><i class="fa-solid fa-droplet bg-info text-white rounded p-2"></i> توزيع الطلبات حسب نوع الخدمة</div>
+                            <?php foreach($appsByService as $s): $pct = round(($s['cnt'] / $maxServiceCnt) * 100); ?>
+                                <div class="bar-row">
+                                    <div class="bar-label"><?= htmlspecialchars($s['srv_name']); ?></div>
+                                    <div class="bar-track"><div class="bar-fill" style="width: <?= max($pct, 8) ?>%; background: #0dcaf0;"><?= $s['cnt']; ?></div></div>
+                                </div>
+                            <?php endforeach; ?>
+                        </div>
+                    </div>
+
+                    <!-- أكثر المدن طلباً -->
+                    <div class="col-lg-6">
+                        <div class="admin-card h-100">
+                            <div class="card-title text-success"><i class="fa-solid fa-city bg-success text-white rounded p-2"></i> أكثر 5 مدن من حيث عدد الطلبات</div>
+                            <?php if(empty($appsByCity)): ?>
+                                <p class="text-muted fw-bold text-center py-3">لا توجد بيانات كافية بعد.</p>
+                            <?php else: foreach($appsByCity as $s): $pct = round(($s['cnt'] / $maxCityCnt) * 100); ?>
+                                <div class="bar-row">
+                                    <div class="bar-label"><?= htmlspecialchars(str_replace('مدينة ', '', $s['cty_name'])); ?></div>
+                                    <div class="bar-track"><div class="bar-fill" style="width: <?= max($pct, 8) ?>%; background: #059669;"><?= $s['cnt']; ?></div></div>
+                                </div>
+                            <?php endforeach; endif; ?>
+                        </div>
+                    </div>
+
+                    <!-- إحصائية مصدر الرفض -->
+                    <div class="col-lg-6">
+                        <div class="admin-card h-100">
+                            <div class="card-title text-danger"><i class="fa-solid fa-ban bg-danger text-white rounded p-2"></i> مصدر الطلبات المرفوضة</div>
+                            <div class="row text-center g-3">
+                                <div class="col-6">
+                                    <div class="p-3 border rounded-3 bg-light">
+                                        <i class="fa-solid fa-robot fs-2 text-secondary mb-2"></i>
+                                        <h3 class="fw-black m-0"><?= $rejectedAutoCount; ?></h3>
+                                        <p class="small text-muted fw-bold m-0">رفض آلي (محرك DSS)</p>
+                                    </div>
+                                </div>
+                                <div class="col-6">
+                                    <div class="p-3 border rounded-3 bg-light">
+                                        <i class="fa-solid fa-user-shield fs-2 text-secondary mb-2"></i>
+                                        <h3 class="fw-black m-0"><?= $rejectedManualCount; ?></h3>
+                                        <p class="small text-muted fw-bold m-0">رفض بشري (مدقق)</p>
+                                    </div>
+                                </div>
                             </div>
-                            <div class="mb-3">
-                                <label class="form-label">البريد الإلكتروني الرسمي</label>
-                                <input type="email" name="emp_email" class="form-control" dir="ltr" placeholder="username@qatra.com" required>
+                        </div>
+                    </div>
+
+                    <!-- إحصائيات الموظفين الشاملة -->
+                    <div class="col-lg-6">
+                        <div class="admin-card h-100">
+                            <div class="card-title text-primary"><i class="fa-solid fa-users-viewfinder bg-primary text-white rounded p-2"></i> توزيع الموظفين حسب الصلاحية</div>
+                            <?php $maxRoleCnt = 1; foreach($empByRole as $r) { $maxRoleCnt = max($maxRoleCnt, $r['cnt']); } ?>
+                            <?php foreach($empByRole as $r): $pct = round(($r['cnt'] / $maxRoleCnt) * 100); ?>
+                                <div class="bar-row">
+                                    <div class="bar-label"><?= roleLabelAr($r['role_name']); ?></div>
+                                    <div class="bar-track"><div class="bar-fill" style="width: <?= max($pct, 8) ?>%; background: var(--blue);"><?= $r['cnt']; ?></div></div>
+                                </div>
+                            <?php endforeach; ?>
+                            <div class="d-flex justify-content-around mt-3 pt-3 border-top">
+                                <span class="fw-bold text-success"><i class="fa-solid fa-circle-check"></i> نشطون: <?= $empActiveCount; ?></span>
+                                <span class="fw-bold text-danger"><i class="fa-solid fa-circle-xmark"></i> موقوفون: <?= $empInactiveCount; ?></span>
                             </div>
-                            <div class="mb-3">
-                                <label class="form-label">كلمة المرور المؤقتة</label>
-                                <input type="password" name="password" class="form-control" dir="ltr" placeholder="******" required>
-                            </div>
-                            <div class="mb-3">
-                                <label class="form-label">مدينة العمل والنطاق</label>
-                                <select name="cty_id" class="form-select" required>
-                                    <?php foreach($cities as $c): ?>
-                                        <option value="<?= $c['cty_id'] ?>"><?= str_replace('مدينة ', '', $c['cty_name']) ?></option>
-                                    <?php endforeach; ?>
-                                </select>
-                            </div>
-                            <div class="mb-4">
-                                <label class="form-label">تحديد الصلاحيات الميدانية</label>
-                                <div class="checkbox-group">
-                                    <?php foreach($rolesList as $role): 
-                                        $label = $role['role_name'];
-                                        if($label == 'Admin') $label = 'مدير';
-                                        elseif($label == 'Auditor') $label = 'مدقق';
-                                        elseif($label == 'Inspection Technician') $label = 'فني فحص';
-                                        elseif($label == 'Installation Technician') $label = 'فني تركيب';
+                        </div>
+                    </div>
+
+                    <!-- أفضل 5 موظفين من حيث الإنجاز -->
+                    <div class="col-lg-6">
+                        <div class="admin-card h-100">
+                            <div class="card-title text-warning"><i class="fa-solid fa-trophy bg-warning text-dark rounded p-2"></i> الأعلى إنجازاً (أفضل 5 موظفين)</div>
+                            <?php if(empty($topPerformers)): ?>
+                                <p class="text-muted fw-bold text-center py-3">لا توجد بيانات إنجاز كافية بعد.</p>
+                            <?php else: ?>
+                                <table class="table table-sm">
+                                    <thead><tr><th>#</th><th>الموظف</th><th>المنصب</th><th class="text-center">إجمالي الإنجاز</th></tr></thead>
+                                    <tbody>
+                                        <?php foreach($topPerformers as $idx => $p): 
+                                            $total = $p['fi_completed'] + $p['it_completed'] + $p['audits_completed'];
+                                            if ($total == 0) continue;
+                                        ?>
+                                        <tr>
+                                            <td class="fw-black text-muted"><?= $idx + 1; ?></td>
+                                            <td class="fw-bold"><?= htmlspecialchars($p['emp_name']); ?></td>
+                                            <td><span class="badge bg-light text-dark border"><?= htmlspecialchars($p['roles']); ?></span></td>
+                                            <td class="text-center"><span class="badge bg-success fs-6"><?= $total; ?></span></td>
+                                        </tr>
+                                        <?php endforeach; ?>
+                                    </tbody>
+                                </table>
+                            <?php endif; ?>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- الصفحة 2: تقارير الأداء المطور -->
+            <div id="page-performance" class="page-view">
+                <div class="admin-card">
+                    <div class="card-title text-success"><i class="fa-solid fa-ranking-star bg-success text-white rounded p-2"></i> التقرير التشغيلي لأداء الموظفين</div>
+                    <div class="table-responsive">
+                        <table class="table table-hover">
+                            <thead><tr><th>اسم الموظف</th><th>المنصب</th><th class="text-center">تفاصيل الإنجاز</th><th class="text-center text-warning">المهام المتراكمة</th><th style="width: 200px;">مؤشر الإنجاز العام</th></tr></thead>
+                            <tbody>
+                                <?php foreach($detailedPerformance as $perf): 
+                                    $totalCompleted = $perf['fi_completed'] + $perf['it_completed'] + $perf['audits_completed'];
+                                    $totalHandled = $totalCompleted + $perf['active_tasks_count'];
+                                    $completionRate = ($totalHandled > 0) ? round(($totalCompleted / $totalHandled) * 100) : 0;
+                                    
+                                    // لون المؤشر
+                                    $pbColor = 'bg-success';
+                                    if ($completionRate < 50) $pbColor = 'bg-danger';
+                                    elseif ($completionRate < 80) $pbColor = 'bg-warning';
+
+                                    // لون شارة المهام المتراكمة حسب عتبة التراكم (8 مهام فأكثر = أحمر)
+                                    $workloadBadge = 'bg-success';
+                                    if ($perf['active_tasks_count'] >= OVERLOAD_THRESHOLD) $workloadBadge = 'bg-danger';
+                                    elseif ($perf['active_tasks_count'] >= 4) $workloadBadge = 'bg-warning text-dark';
+                                ?>
+                                <tr>
+                                    <td class="fw-bold"><?= htmlspecialchars($perf['emp_name']); ?></td>
+                                    <td><span class="badge bg-light text-dark border"><?= htmlspecialchars($perf['roles']); ?></span></td>
+                                    <td class="text-center">
+                                        <div class="small fw-bold text-muted">
+                                            <?= $perf['fi_completed'] > 0 ? "<span class='text-primary'>فحص: {$perf['fi_completed']}</span> | " : "" ?>
+                                            <?= $perf['it_completed'] > 0 ? "<span class='text-success'>تركيب: {$perf['it_completed']}</span> | " : "" ?>
+                                            <?= $perf['audits_completed'] > 0 ? "<span class='text-info'>تدقيق: {$perf['audits_completed']}</span>" : "" ?>
+                                            <?= $totalCompleted == 0 ? "لا يوجد إنجازات" : "" ?>
+                                        </div>
+                                    </td>
+                                    <td class="text-center"><span class="badge <?= $workloadBadge ?> fs-6"><?= $perf['active_tasks_count']; ?></span></td>
+                                    <td>
+                                        <div class="d-flex justify-content-between small fw-bold mb-1">
+                                            <span>معدل الإنجاز</span><span><?= $completionRate ?>%</span>
+                                        </div>
+                                        <div class="progress" style="height: 8px;">
+                                            <div class="progress-bar <?= $pbColor ?>" role="progressbar" style="width: <?= $completionRate ?>%;"></div>
+                                        </div>
+                                    </td>
+                                </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- الصفحة 3: التنبيهات والتوجيه (مع ميزة الاختيار اليدوي والإسناد الجماعي) -->
+            <div id="page-alerts" class="page-view">
+                
+                <!-- قسم 1: المهام غير المسندة -->
+                <div class="admin-card mb-4">
+                    <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
+                        <div class="card-title text-danger m-0 border-0 p-0"><i class="fa-solid fa-triangle-exclamation bg-danger text-white rounded p-2"></i> الطوارئ: مهام لم تجد فني في مدينتها!</div>
+                        <?php if(!empty($unassignedTasks)): ?>
+                            <form method="POST" onsubmit="return confirm('سيتم البحث عن أقرب فني متاح لكل مهمة غير مسندة (بنفس المدينة أو المنطقة) وإسنادها آلياً دفعة واحدة. متابعة؟');">
+                                <button type="submit" name="dispatch_all_unassigned" class="btn btn-primary fw-bold rounded-pill px-4">
+                                    <i class="fa-solid fa-bolt me-1"></i> إسناد جميع المهام آلياً دفعة واحدة (<?= count($unassignedTasks); ?>)
+                                </button>
+                            </form>
+                        <?php endif; ?>
+                    </div>
+                    <?php if(empty($unassignedTasks)): ?>
+                        <div class="text-center py-4"><i class="fa-solid fa-check-circle text-success fs-1 mb-2"></i><p class="fw-bold text-success m-0">نظام التوزيع يعمل 100%. لا يوجد مهام معلقة.</p></div>
+                    <?php else: ?>
+                        <div class="alert border border-danger fw-bold bg-white text-danger"><i class="fa-solid fa-info-circle me-2"></i> فشل النظام في إسناد هذه الطلبات. يمكنك الضغط على زر الإسناد الجماعي أعلاه لتوزيعها كلها آلياً دفعة واحدة، أو التعامل مع كل طلب على حدة (بحث آلي فردي أو إسناد يدوي) من الجدول أدناه.</div>
+                        <div class="table-responsive">
+                            <table class="table border">
+                                <thead><tr><th>الطلب</th><th>مدينة العميل</th><th>بحث إقليمي آلي</th><th style="width: 300px;">إسناد يدوياً (اختيار مدير)</th></tr></thead>
+                                <tbody>
+                                    <?php foreach($unassignedTasks as $task): 
+                                        $reqRole = ($task['app_status'] == 'Pending_Inspection') ? 'Inspection Technician' : 'Installation Technician';
                                     ?>
-                                        <div>
-                                            <input type="checkbox" name="roles[]" id="role_<?= $role['role_id'] ?>" value="<?= $role['role_id'] ?>">
-                                            <label for="role_<?= $role['role_id'] ?>"><?= $label ?></label>
+                                    <tr>
+                                        <td class="fw-bold text-muted">#<?= str_pad($task['app_id'], 5, '0', STR_PAD_LEFT); ?></td>
+                                        <td><span class="badge bg-danger"><i class="fa-solid fa-location-dot"></i> <?= htmlspecialchars($task['cty_name']); ?></span></td>
+                                        
+                                        <!-- زر التوزيع الآلي (يبحث في المدينة ثم المنطقة) -->
+                                        <td>
+                                            <form method="POST">
+                                                <input type="hidden" name="app_id" value="<?= $task['app_id']; ?>">
+                                                <input type="hidden" name="cty_id" value="<?= $task['cty_id']; ?>">
+                                                <input type="hidden" name="req_role" value="<?= $reqRole; ?>">
+                                                <button type="submit" name="dispatch_unassigned" class="btn btn-sm btn-outline-primary fw-bold rounded-pill px-3"><i class="fa-solid fa-satellite-dish"></i> إسناد آلي</button>
+                                            </form>
+                                        </td>
+
+                                        <!-- الإسناد اليدوي (يختار المدير الفني بنفسه) -->
+                                        <td>
+                                            <form method="POST" class="d-flex gap-2">
+                                                <input type="hidden" name="app_id" value="<?= $task['app_id']; ?>">
+                                                <input type="hidden" name="req_role" value="<?= $reqRole; ?>">
+                                                <select name="manual_emp_id" class="form-select form-select-sm" required>
+                                                    <option value="" disabled selected>-- اختر فني --</option>
+                                                    <?php foreach($activeTechs as $tech): 
+                                                        // عرض الفنيين من نفس التخصص المطلوب فقط
+                                                        if(strpos($tech['role_name'], $reqRole) !== false): ?>
+                                                            <option value="<?= $tech['emp_id'] ?>"><?= htmlspecialchars($tech['emp_name']) ?> (<?= htmlspecialchars($tech['cty_name']) ?>)</option>
+                                                    <?php endif; endforeach; ?>
+                                                </select>
+                                                <button type="submit" name="manual_assign" class="btn btn-sm btn-success fw-bold"><i class="fa-solid fa-check"></i></button>
+                                            </form>
+                                        </td>
+
+                                    </tr>
+                                    <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        </div>
+                    <?php endif; ?>
+                </div>
+
+                <!-- قسم 2: ضغط العمل وإعادة التوزيع -->
+                <div class="admin-card">
+                    <div class="card-title text-warning"><i class="fa-solid fa-triangle-exclamation bg-warning text-dark rounded p-2"></i> موظفون ذوي مهام متراكمة (<?= OVERLOAD_THRESHOLD; ?> مهام فأكثر)</div>
+                    <?php if(empty($overloadedEmps)): ?>
+                        <div class="text-center py-4"><i class="fa-solid fa-check-circle text-success fs-1 mb-2"></i><p class="fw-bold text-success m-0">توزيع المهام مثالي ولا يوجد تراكم.</p></div>
+                    <?php else: ?>
+                        <div class="table-responsive">
+                            <table class="table">
+                                <thead><tr><th>اسم الموظف</th><th class="text-center">مهام نشطة</th><th>إعادة توزيع ذكي</th><th>إنذار</th></tr></thead>
+                                <tbody>
+                                    <?php foreach($overloadedEmps as $emp): ?>
+                                    <tr>
+                                        <td class="fw-bold"><?= htmlspecialchars($emp['emp_name']); ?></td>
+                                        <td class="text-center"><span class="badge bg-danger fs-6"><?= $emp['active_tasks_count']; ?></span></td>
+                                        <td>
+                                            <form method="POST" onsubmit="return confirm('تأكيد سحب المهام وتوزيعها آلياً حسب الخوارزمية الجغرافية؟');">
+                                                <input type="hidden" name="target_emp_id" value="<?= $emp['emp_id']; ?>">
+                                                <button type="submit" name="reassign_tasks" class="btn btn-sm btn-warning text-dark fw-bold rounded-pill"><i class="fa-solid fa-shuffle"></i> توزيع آلي</button>
+                                            </form>
+                                        </td>
+                                        <td>
+                                            <form method="POST">
+                                                <input type="hidden" name="target_emp_id" value="<?= $emp['emp_id']; ?>">
+                                                <button type="submit" name="send_warning" class="btn btn-sm btn-outline-danger fw-bold rounded-pill"><i class="fa-solid fa-envelope"></i></button>
+                                            </form>
+                                        </td>
+                                    </tr>
+                                    <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        </div>
+                    <?php endif; ?>
+                </div>
+            </div>
+
+            <!-- الصفحة 4: قائمة الطلبات المرفوضة (تم تعديل التحذير ليكون نصياً فقط) -->
+            <div id="page-archive" class="page-view">
+                <div class="admin-card">
+                    <div class="card-title text-secondary"><i class="fa-solid fa-shield-halved bg-secondary text-white rounded p-2"></i> سجل الطلبات المرفوضة</div>
+                    <p class="text-muted fw-bold mb-4 small"><i class="fa-solid fa-eye me-1"></i> هذه القائمة للاطلاع الإداري والرقابة لضمان شفافية النظام.</p>
+                    <div class="table-responsive">
+                        <table class="table table-hover">
+                            <thead><tr><th>الطلب</th><th>العميل</th><th>جهة الرفض</th><th>سبب الرفض</th></tr></thead>
+                            <tbody>
+                                <?php foreach($rejectedApps as $app): ?>
+                                <tr>
+                                    <td class="fw-bold text-muted">#<?= str_pad($app['app_id'], 5, '0', STR_PAD_LEFT); ?><br><span class="small"><?= $app['change_date']; ?></span></td>
+                                    <td class="fw-bold text-dark"><?= htmlspecialchars($app['customer_name'] ?? '-'); ?></td>
+                                    <td><?= $app['auditor_name'] ? "<span class='badge bg-secondary'>المدقق: ".htmlspecialchars($app['auditor_name'])."</span>" : "<span class='badge bg-dark'>رفض آلي (DSS)</span>" ?></td>
+                                    <td><button class="btn btn-sm btn-outline-primary fw-bold rounded-pill" onclick="showReason('<?= htmlspecialchars($app['deed_no']) ?>', '<?= htmlspecialchars($app['rejection_reason']) ?>')"><i class="fa-solid fa-folder-open me-1"></i> عرض السبب</button></td>
+                                </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- الصفحة 5: إدارة الموارد البشرية -->
+            <div id="page-hr" class="page-view">
+
+                <!-- إحصائيات سريعة عن الموظفين -->
+                <div class="row g-3 mb-4">
+                    <div class="col-md-3"><div class="mini-stat"><h3 class="text-primary"><?= $empTotalCount; ?></h3><p>إجمالي الموظفين</p></div></div>
+                    <div class="col-md-3"><div class="mini-stat"><h3 class="text-success"><?= $empActiveCount; ?></h3><p>موظفون نشطون</p></div></div>
+                    <div class="col-md-3"><div class="mini-stat"><h3 class="text-danger"><?= $empInactiveCount; ?></h3><p>موظفون موقوفون</p></div></div>
+                    <div class="col-md-3"><div class="mini-stat"><h3 class="text-warning"><?= count($overloadedEmps); ?></h3><p>لديهم مهام متراكمة</p></div></div>
+                </div>
+
+                <div class="row g-4">
+                    <div class="col-lg-3">
+                        <div class="admin-card h-100">
+                            <div class="card-title"><i class="fa-solid fa-user-plus text-primary"></i> موظف جديد</div>
+                            <form method="POST">
+                                <div class="mb-3"><label class="fw-bold mb-1">الاسم الرباعي</label><input type="text" name="emp_name" class="form-control bg-light" required></div>
+                                <div class="mb-3"><label class="fw-bold mb-1">البريد الإلكتروني</label><input type="email" name="emp_email" class="form-control bg-light" dir="ltr" required></div>
+                                <div class="mb-3"><label class="fw-bold mb-1">كلمة المرور</label><input type="password" name="password" class="form-control bg-light" dir="ltr" required></div>
+                                <div class="mb-3">
+                                    <label class="fw-bold mb-1">المدينة</label>
+                                    <select name="cty_id" class="form-select bg-light" required>
+                                        <?php foreach($cities as $c): ?><option value="<?= $c['cty_id'] ?>"><?= $c['cty_name'] ?></option><?php endforeach; ?>
+                                    </select>
+                                </div>
+                                <label class="fw-bold mb-2">تحديد الصلاحيات:</label>
+                                <div class="mb-4 p-3 border rounded bg-light">
+                                    <?php foreach($rolesList as $role): 
+                                        $lbl = roleLabelAr($role['role_name']);
+                                    ?>
+                                        <div class="form-check mb-2">
+                                            <input class="form-check-input" type="checkbox" name="roles[]" value="<?= $role['role_id'] ?>" id="r_<?= $role['role_id'] ?>">
+                                            <label class="form-check-label fw-bold" for="r_<?= $role['role_id'] ?>"><?= $lbl ?></label>
                                         </div>
                                     <?php endforeach; ?>
                                 </div>
-                            </div>
-                            <button type="submit" name="add_employee" class="btn-brand">
-                                <i class="fa-solid fa-floppy-disk me-1"></i> حفظ وتسجيل الموظف
-                            </button>
-                        </form>
-                    </div>
-                </div>
-
-                <!-- جدول عرض سجلات الموظفين الحالية -->
-                <div class="col-lg-9">
-                    <div class="corporate-card h-100">
-                        <div class="card-header-title">
-                            <span><i class="fa-solid fa-users me-1"></i> سجلات الموظفين الفعالة (<?= $empCount; ?>)</span>
+                                <button type="submit" name="add_employee" class="btn-brand">حفظ الموظف</button>
+                            </form>
                         </div>
-                        <div class="table-responsive">
-                            <table class="table table-hover">
-                                <thead>
-                                    <tr>
-                                        <th>الموظف</th>
-                                        <th>المدينة</th>
-                                        <th>الصلاحيات</th>
-                                        <th class="text-center">المهام الميدانية</th>
-                                        <th>الحالة</th>
-                                        <th>الإجراءات</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <?php foreach($employeesData as $emp): ?>
-                                        <tr>
-                                            <td>
-                                                <div class="fw-bold text-dark"><?= htmlspecialchars($emp['emp_name']) ?></div>
-                                                <div class="text-muted small" style="font-family: Tahoma;"><?= htmlspecialchars($emp['emp_email']) ?></div>
-                                            </td>
-                                            <td><span class="text-muted"><i class="fa-solid fa-location-dot text-danger small me-1"></i> <?= htmlspecialchars(str_replace('مدينة ', '', $emp['cty_name'] ?? 'غير محدد')) ?></span></td>
-                                            <td>
-                                                <?php 
-                                                if ($emp['roles']) {
-                                                    foreach(explode(',', $emp['roles']) as $r) {
-                                                        $translated = $r;
-                                                        if($r == 'Admin') $translated = 'مدير';
-                                                        elseif($r == 'Auditor') $translated = 'مدقق';
-                                                        elseif($r == 'Inspection Technician') $translated = 'فني فحص';
-                                                        elseif($r == 'Installation Technician') $translated = 'فني تركيب';
-                                                        echo "<span class='badge-role'>$translated</span>";
-                                                    }
-                                                } else {
-                                                    echo "<span class='text-muted'>-</span>";
-                                                }
-                                                ?>
-                                            </td>
-                                            <td class="text-center">
-                                                <?php if(strpos($emp['roles'], 'Technician') !== false): 
-                                                    $isOverloaded = ($emp['active_tasks_count'] > 3);
-                                                ?>
-                                                    <span class="badge rounded-pill px-3 py-2 <?= $isOverloaded ? 'bg-danger workload-warning' : 'bg-info text-dark' ?>" title="<?= $isOverloaded ? 'تحذير: تحميل زائد على الفني!' : 'المهام المعلقة طبيعية' ?>">
-                                                        <?= $emp['active_tasks_count'] ?> مهام
-                                                    </span>
-                                                <?php else: ?>
-                                                    <span class="text-muted">-</span>
-                                                <?php endif; ?>
-                                            </td>
-                                            <td>
-                                                <?= $emp['is_active'] ? 
-                                                    '<span class="status-badge bg-success text-white"><i class="fa-solid fa-circle-check"></i> نشط</span>' : 
-                                                    '<span class="status-badge bg-danger text-white"><i class="fa-solid fa-circle-xmark"></i> موقوف</span>' 
-                                                ?>
-                                            </td>
-                                            <td>
-                                                <div class="d-flex gap-1">
-                                                    <!-- تعديل -->
-                                                    <button class="btn-action btn-edit" data-bs-toggle="modal" data-bs-target="#editModal<?= $emp['emp_id'] ?>" title="تعديل"><i class="fa-solid fa-pen-to-square"></i></button>
-                                                    
-                                                    <!-- إيقاف -->
-                                                    <form method="POST" style="display:inline;">
-                                                        <input type="hidden" name="target_emp_id" value="<?= $emp['emp_id'] ?>">
-                                                        <button type="submit" name="toggle_status" class="btn-action btn-suspend" title="تجميد/تفعيل"><i class="fa-solid fa-power-off"></i></button>
-                                                    </form>
-                                                    
-                                                    <!-- حذف -->
-                                                    <form method="POST" style="display:inline;" onsubmit="return confirm('تنبيه: هل أنت متأكد من رغبتك في حذف سجل الموظف؟')">
-                                                        <input type="hidden" name="target_emp_id" value="<?= $emp['emp_id'] ?>">
-                                                        <button type="submit" name="delete_employee" class="btn-action btn-delete" title="حذف نهائي"><i class="fa-solid fa-trash-can"></i></button>
-                                                    </form>
-                                                </div>
+                    </div>
 
-                                                <!-- نافذة تعديل بيانات الموظف (Modal) -->
-                                                <div class="modal fade" id="editModal<?= $emp['emp_id'] ?>" tabindex="-1">
-                                                    <div class="modal-dialog modal-dialog-centered">
-                                                        <div class="modal-content" style="border-radius: 16px; border: none; box-shadow: 0 15px 30px rgba(0,0,0,0.1);">
-                                                            <div class="modal-header border-0 pb-0">
-                                                                <h5 class="modal-title fw-black"><i class="fa-solid fa-user-pen text-primary"></i> تحديث سجل الموظف</h5>
-                                                                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-                                                            </div>
-                                                            <form method="POST">
-                                                                <div class="modal-body">
-                                                                    <input type="hidden" name="edit_emp_id" value="<?= $emp['emp_id'] ?>">
-                                                                    <div class="mb-3 text-start">
-                                                                        <label class="form-label">الاسم الكامل</label>
-                                                                        <input type="text" name="edit_emp_name" class="form-control" value="<?= htmlspecialchars($emp['emp_name']) ?>" required>
-                                                                    </div>
-                                                                    <div class="mb-3 text-start">
-                                                                        <label class="form-label">البريد الإلكتروني</label>
-                                                                        <input type="email" name="edit_emp_email" class="form-control" dir="ltr" value="<?= htmlspecialchars($emp['emp_email']) ?>" required>
-                                                                    </div>
-                                                                    <div class="mb-3 text-start">
-                                                                        <label class="form-label">المدينة</label>
-                                                                        <select name="edit_cty_id" class="form-select" required>
-                                                                            <?php foreach($cities as $c): ?>
-                                                                                <option value="<?= $c['cty_id'] ?>" <?= $emp['cty_id'] == $c['cty_id'] ? 'selected' : '' ?>><?= str_replace('مدينة ', '', $c['cty_name']) ?></option>
-                                                                            <?php endforeach; ?>
-                                                                        </select>
-                                                                    </div>
-                                                                    <div class="text-start mb-2">
-                                                                        <label class="form-label">صلاحيات الموظف</label>
-                                                                        <div class="checkbox-group">
+                    <div class="col-lg-9">
+                        <div class="admin-card h-100">
+                            <div class="card-title"><i class="fa-solid fa-users text-primary"></i> قاعدة بيانات الموظفين الشاملة</div>
+                            <div class="table-responsive">
+                                <table class="table table-hover">
+                                    <thead><tr><th>الموظف</th><th>الصلاحية</th><th>المدينة</th><th class="text-center">مهام نشطة</th><th>الحالة</th><th>الإجراء</th></tr></thead>
+                                    <tbody>
+                                        <?php foreach($employeesData as $emp): ?>
+                                            <tr>
+                                                <td><div class="fw-bold text-dark"><?= htmlspecialchars($emp['emp_name']) ?></div><div class="small text-muted" dir="ltr"><?= htmlspecialchars($emp['emp_email']) ?></div></td>
+                                                <td>
+                                                    <?php foreach(explode(',', $emp['roles']) as $r): 
+                                                        $t = $r == 'Admin' ? 'مدير' : ($r == 'Auditor' ? 'مدقق' : ($r == 'Inspection Technician' ? 'فحص' : 'تركيب'));
+                                                        echo "<span class='badge bg-light text-dark border me-1'>$t</span>";
+                                                    endforeach; ?>
+                                                </td>
+                                                <td class="small text-muted"><?= htmlspecialchars(str_replace('مدينة ', '', $emp['cty_name'] ?? '-')) ?></td>
+                                                <td class="text-center">
+                                                    <?php
+                                                        $wBadge = 'bg-success';
+                                                        if ($emp['active_tasks_count'] >= OVERLOAD_THRESHOLD) $wBadge = 'bg-danger';
+                                                        elseif ($emp['active_tasks_count'] >= 4) $wBadge = 'bg-warning text-dark';
+                                                    ?>
+                                                    <span class="badge <?= $wBadge ?>"><?= $emp['active_tasks_count']; ?></span>
+                                                </td>
+                                                <td><?= $emp['is_active'] ? "<span class='badge bg-success'>نشط</span>" : "<span class='badge bg-danger'>موقوف</span>" ?></td>
+                                                <td>
+                                                    <div class="d-flex gap-2">
+                                                        <button class="btn btn-sm btn-outline-primary rounded-pill fw-bold" data-bs-toggle="modal" data-bs-target="#editModal<?= $emp['emp_id'] ?>"><i class="fa-solid fa-pen-to-square"></i> تعديل</button>
+                                                        <form method="POST">
+                                                            <input type="hidden" name="target_emp_id" value="<?= $emp['emp_id'] ?>">
+                                                            <button type="submit" name="toggle_status" class="btn btn-sm btn-outline-dark fw-bold rounded-pill">
+                                                                <?= $emp['is_active'] ? '<i class="fa-solid fa-ban"></i> إيقاف الموظف' : '<i class="fa-solid fa-check"></i> تفعيل الموظف' ?>
+                                                            </button>
+                                                        </form>
+                                                    </div>
+
+                                                    <div class="modal fade" id="editModal<?= $emp['emp_id'] ?>" tabindex="-1">
+                                                        <div class="modal-dialog">
+                                                            <div class="modal-content" style="border-radius: 12px; border:none; box-shadow: 0 10px 30px rgba(0,0,0,0.1);">
+                                                                <div class="modal-header border-0 pb-0">
+                                                                    <h5 class="modal-title fw-black text-primary"><i class="fa-solid fa-pen-to-square me-2"></i> تعديل بيانات الموظف</h5>
+                                                                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                                                                </div>
+                                                                <form method="POST">
+                                                                    <div class="modal-body">
+                                                                        <input type="hidden" name="edit_emp_id" value="<?= $emp['emp_id'] ?>">
+                                                                        <div class="mb-3"><label class="fw-bold mb-1">الاسم</label><input type="text" name="edit_emp_name" class="form-control" value="<?= htmlspecialchars($emp['emp_name']) ?>" required></div>
+                                                                        <div class="mb-3"><label class="fw-bold mb-1">الإيميل</label><input type="email" name="edit_emp_email" class="form-control" dir="ltr" value="<?= htmlspecialchars($emp['emp_email']) ?>" required></div>
+                                                                        <div class="mb-3">
+                                                                            <label class="fw-bold mb-1">المدينة</label>
+                                                                            <select name="edit_cty_id" class="form-select" required>
+                                                                                <?php foreach($cities as $c): ?>
+                                                                                    <option value="<?= $c['cty_id'] ?>" <?= $emp['cty_id'] == $c['cty_id'] ? 'selected' : '' ?>><?= $c['cty_name'] ?></option>
+                                                                                <?php endforeach; ?>
+                                                                            </select>
+                                                                        </div>
+                                                                        <label class="fw-bold mb-2">تحديث الصلاحيات:</label>
+                                                                        <div class="border p-3 rounded bg-light">
                                                                             <?php 
                                                                             $empCurrentRoles = explode(',', $emp['role_ids'] ?? '');
                                                                             foreach($rolesList as $role): 
                                                                                 $isChecked = in_array($role['role_id'], $empCurrentRoles) ? 'checked' : '';
-                                                                                $label = $role['role_name'];
-                                                                                if($label == 'Admin') $label = 'مدير';
-                                                                                elseif($label == 'Auditor') $label = 'مدقق';
-                                                                                elseif($label == 'Inspection Technician') $label = 'فني فحص';
-                                                                                elseif($label == 'Installation Technician') $label = 'فني تركيب';
+                                                                                $lbl = roleLabelAr($role['role_name']);
                                                                             ?>
-                                                                                <div>
-                                                                                    <input type="checkbox" name="edit_roles[]" id="edit_role_<?= $emp['emp_id'] ?>_<?= $role['role_id'] ?>" value="<?= $role['role_id'] ?>" <?= $isChecked ?>>
-                                                                                    <label for="edit_role_<?= $emp['emp_id'] ?>_<?= $role['role_id'] ?>"><?= $label ?></label>
+                                                                                <div class="form-check mb-2">
+                                                                                    <input class="form-check-input" type="checkbox" name="edit_roles[]" id="edit_role_<?= $emp['emp_id'] ?>_<?= $role['role_id'] ?>" value="<?= $role['role_id'] ?>" <?= $isChecked ?>>
+                                                                                    <label class="form-check-label fw-bold" for="edit_role_<?= $emp['emp_id'] ?>_<?= $role['role_id'] ?>"><?= $lbl ?></label>
                                                                                 </div>
                                                                             <?php endforeach; ?>
                                                                         </div>
                                                                     </div>
-                                                                </div>
-                                                                <div class="modal-footer border-0">
-                                                                    <button type="submit" name="edit_employee" class="btn-brand"><i class="fa-solid fa-circle-check"></i> حفظ التحديثات</button>
-                                                                </div>
-                                                            </form>
+                                                                    <div class="modal-footer border-0">
+                                                                        <button type="submit" name="edit_employee" class="btn-brand">حفظ التعديلات</button>
+                                                                    </div>
+                                                                </form>
+                                                            </div>
                                                         </div>
                                                     </div>
-                                                </div>
-
-                                            </td>
-                                        </tr>
-                                    <?php endforeach; ?>
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-                </div>
-
-            </div>
-        </div>
-
-        <!-- ========================================================= -->
-        <!-- التبويب 2: لوحة التقارير والرقابة التشغيلية (الجديد بالكامل) -->
-        <!-- ========================================================= -->
-        <div id="supervision-hub" class="tab-panel">
-            
-            <!-- أرقام تشغيلية وKPIs ممتازة -->
-            <div class="row g-4 mb-5">
-                <div class="col-md-4">
-                    <div class="kpi-card">
-                        <div>
-                            <div class="kpi-val text-success"><?= number_format($reportStats['total_paid']); ?> <span class="fs-6 font-monospace">ريال</span></div>
-                            <div class="kpi-lbl">إجمالي التحصيلات والمبيعات الميدانية</div>
-                        </div>
-                        <div class="kpi-icon bg-success bg-opacity-10 text-success"><i class="fa-solid fa-wallet"></i></div>
-                    </div>
-                </div>
-                <div class="col-md-4">
-                    <div class="kpi-card">
-                        <div>
-                            <div class="kpi-val text-info"><?= number_format($reportStats['total_meters']); ?> <span class="fs-6 font-monospace">عداد</span></div>
-                            <div class="kpi-lbl">العدادات الذكية المربوطة والمقروءة</div>
-                        </div>
-                        <div class="kpi-icon bg-info bg-opacity-10 text-info"><i class="fa-solid fa-microchip"></i></div>
-                    </div>
-                </div>
-                <div class="col-md-4">
-                    <div class="kpi-card">
-                        <div>
-                            <div class="kpi-val text-primary"><?= number_format($reportStats['total_unified']); ?> <span class="fs-6 font-monospace">عقار</span></div>
-                            <div class="kpi-lbl">الحسابات الموحدة والمفعلة بالشبكة</div>
-                        </div>
-                        <div class="kpi-icon bg-primary bg-opacity-10 text-primary"><i class="fa-solid fa-building-circle-check"></i></div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="row g-4">
-                
-                <!-- عمود مراقبة الحالات وسير المعاملات (Progress Charts) -->
-                <div class="col-lg-4">
-                    <div class="corporate-card h-100">
-                        <div class="card-header-title">
-                            <span><i class="fa-solid fa-chart-pie me-1"></i> تتبع انسيابية دورة حياة الطلبات</span>
-                        </div>
-                        
-                        <div class="mb-4">
-                            <div class="d-flex justify-content-between font-bold text-dark">
-                                <span><i class="fa-solid fa-file-invoice text-muted me-1"></i> طلبات بانتظار التدقيق</span>
-                                <span><?= $reportStats['pending_review']; ?> طلبات</span>
-                            </div>
-                            <div class="progress-bar-custom">
-                                <div class="progress-bar-fill bg-warning" style="width: <?= min(100, $reportStats['pending_review'] * 10); ?>%"></div>
-                            </div>
-                        </div>
-
-                        <div class="mb-4">
-                            <div class="d-flex justify-content-between font-bold text-dark">
-                                <span><i class="fa-solid fa-helmet-safety text-info me-1"></i> طلبات الفحص الجاري</span>
-                                <span><?= $reportStats['pending_inspection']; ?> طلبات</span>
-                            </div>
-                            <div class="progress-bar-custom">
-                                <div class="progress-bar-fill bg-info" style="width: <?= min(100, $reportStats['pending_inspection'] * 10); ?>%"></div>
-                            </div>
-                        </div>
-
-                        <div class="mb-4">
-                            <div class="d-flex justify-content-between font-bold text-dark">
-                                <span><i class="fa-solid fa-credit-card text-primary me-1"></i> طلبات بانتظار الفوترة والسداد</span>
-                                <span><?= $reportStats['pending_billing']; ?> طلبات</span>
-                            </div>
-                            <div class="progress-bar-custom">
-                                <div class="progress-bar-fill bg-primary" style="width: <?= min(100, $reportStats['pending_billing'] * 10); ?>%"></div>
-                            </div>
-                        </div>
-
-                        <div class="mb-4">
-                            <div class="d-flex justify-content-between font-bold text-dark">
-                                <span><i class="fa-solid fa-circle-check text-success me-1"></i> طلبات منجزة وموصولة بالكامل</span>
-                                <span><?= $reportStats['completed']; ?> طلبات</span>
-                            </div>
-                            <div class="progress-bar-custom">
-                                <div class="progress-bar-fill bg-success" style="width: <?= min(100, $reportStats['completed'] * 5); ?>%"></div>
-                            </div>
-                        </div>
-                        
-                        <div class="bg-light p-3 rounded-3 text-center border mt-4">
-                            <h6 class="fw-bold mb-1"><i class="fa-solid fa-circle-info text-primary"></i> نظام الجدولة والرقابة الذاتية:</h6>
-                            <p class="small text-muted m-0">يتم تصفية وحساب الطلبات بناءً على حركات فنيي الفحص والتركيب الميدانيين آلياً في الوقت الفعلي.</p>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- جدول مراقبة تحميل الفنيين (Technician Load Watchdog) -->
-                <div class="col-lg-8">
-                    <div class="corporate-card">
-                        <div class="card-header-title">
-                            <span><i class="fa-solid fa-gauge-high me-1"></i> مراقب كفاءة توزيع المهام على الفنيين</span>
-                            <span class="badge bg-danger rounded-pill fw-bold" style="font-size:0.75rem;">تنبيه فوري بالضغط</span>
-                        </div>
-                        <div class="table-responsive">
-                            <table class="table">
-                                <thead>
-                                    <tr>
-                                        <th>الفني الميداني</th>
-                                        <th>المدينة</th>
-                                        <th>المهام المعلقة</th>
-                                        <th>مؤشر الضغط والتحميل</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <?php 
-                                    $hasTech = false;
-                                    foreach($employeesData as $emp) {
-                                        if (strpos($emp['roles'], 'Technician') !== false) {
-                                            $hasTech = true;
-                                            $loadRatio = min(100, ($emp['active_tasks_count'] / 5) * 100);
-                                            $colorClass = ($emp['active_tasks_count'] > 3) ? 'bg-danger' : (($emp['active_tasks_count'] > 1) ? 'bg-warning' : 'bg-success');
-                                            ?>
-                                            <tr>
-                                                <td class="fw-bold"><?= htmlspecialchars($emp['emp_name']); ?></td>
-                                                <td><i class="fa-solid fa-location-dot text-danger small"></i> <?= htmlspecialchars(str_replace('مدينة ', '', $emp['cty_name'] ?? 'غير محدد')); ?></td>
-                                                <td>
-                                                    <span class="badge <?= ($emp['active_tasks_count'] > 3) ? 'bg-danger workload-warning' : 'bg-secondary' ?> px-3 py-1 fw-black">
-                                                        <?= $emp['active_tasks_count']; ?> مهام نشطة
-                                                    </span>
                                                 </td>
-                                                <td>
-                                                    <div class="progress" style="height: 10px; border-radius: 50px;">
-                                                        <div class="progress-bar <?= $colorClass; ?>" role="progressbar" style="width: <?= $loadRatio; ?>%"></div>
-                                                    </div>
-                                                    <small class="text-muted d-block mt-1"><?= ($emp['active_tasks_count'] > 3) ? '⚠️ حمولة تشغيلية زائدة!' : 'توزيع مستقر ومتوازن' ?></small>
-                                                </td>
-                                            </tr>
-                                            <?php
-                                        }
-                                    }
-                                    if(!$hasTech): ?>
-                                        <tr><td colspan="4" class="text-center text-muted py-4">لا يوجد أي فني فحص أو تركيب مسجل حالياً بالنظام لتتبع كفاءته.</td></tr>
-                                    <?php endif; ?>
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-
-                    <!-- الأرشيف الأمني وتاريخ الحركات وتتبع التأخير -->
-                    <div class="corporate-card mt-4">
-                        <div class="card-header-title">
-                            <span><i class="fa-solid fa-clock-rotate-left me-1"></i> أرشيف تتبع الحركات التاريخية للطلبات (Audit Log)</span>
-                        </div>
-                        <div class="table-responsive">
-                            <table class="table table-sm">
-                                <thead>
-                                    <tr>
-                                        <th>رقم الطلب</th>
-                                        <th>حركة الطلب</th>
-                                        <th>المسؤول</th>
-                                        <th>التفاصيل والمبرر</th>
-                                        <th>تاريخ التعديل</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <?php if(empty($auditLog)): ?>
-                                        <tr><td colspan="5" class="text-center text-muted py-4">لا توجد حركات تاريخية مسجلة في الأرشيف الميداني بعد.</td></tr>
-                                    <?php else: ?>
-                                        <?php foreach($auditLog as $log): ?>
-                                            <tr>
-                                                <td class="font-monospace text-muted">#<?= str_pad($log['app_id'], 5, '0', STR_PAD_LEFT); ?></td>
-                                                <td><?= getStatusBadge($log['status']); ?></td>
-                                                <td class="fw-bold text-dark"><?= htmlspecialchars($log['emp_name'] ?? 'محرك DSS الذكي'); ?></td>
-                                                <td class="text-muted small"><?= htmlspecialchars($log['rejection_reason'] ?? 'تحديث الحالة دورياً عبر النظام'); ?></td>
-                                                <td class="small text-secondary"><?= $log['change_date']; ?></td>
                                             </tr>
                                         <?php endforeach; ?>
-                                    <?php endif; ?>
-                                </tbody>
-                            </table>
+                                    </tbody>
+                                </table>
+                            </div>
                         </div>
                     </div>
-
                 </div>
             </div>
-            
-        </div>
 
+        </div>
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
     <script>
-        // التبديل السلس والتفاعلي الفوري بين التبويبات الفاخرة لمدير النظام
-        function switchPanel(panelId, btnElement) {
-            document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
-            document.querySelectorAll('.nav-link-custom').forEach(b => b.classList.remove('active'));
-            
-            const targetPanel = document.getElementById(panelId);
-            if (targetPanel) {
-                targetPanel.classList.add('active');
-            }
-            if (btnElement) {
-                btnElement.classList.add('active');
-            }
-            
-            // تحديث العناوين الفرعية
-            const titleElement = document.getElementById('page-title');
-            const descElement = document.getElementById('page-desc');
-            
-            if (panelId === 'hr-management') {
-                titleElement.innerText = "إدارة الموارد البشرية";
-                descElement.innerText = "البوابة التشغيلية الكاملة للتحكم في حسابات الموظفين وصلاحياتهم.";
-            } else if (panelId === 'supervision-hub') {
-                titleElement.innerText = "لوحة التقارير والرقابة";
-                descElement.innerText = "تتبع كفاءة الموظفين، الإيرادات المالية المحصلة، والتحذيرات التشغيلية الحية.";
-            }
+        function openPage(pageId, element) {
+            document.querySelectorAll('.page-view').forEach(p => p.classList.remove('active'));
+            document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+            document.getElementById(pageId).classList.add('active');
+            element.classList.add('active');
+            document.getElementById('topbar-title').innerText = element.innerText;
+        }
+
+        function showReason(deedNo, reason) {
+            Swal.fire({
+                title: 'تفاصيل الرفض',
+                html: `<div style="text-align: right; background: #f8fafc; padding: 20px; border-radius: 12px;">
+                        <p class="mb-3"><strong>رقم الصك:</strong> <span dir="ltr">${deedNo}</span></p>
+                        <p class="text-danger fw-bold m-0">${reason}</p>
+                       </div>`,
+                confirmButtonColor: '#0b457f',
+                confirmButtonText: 'إغلاق'
+            });
         }
     </script>
 </body>
