@@ -502,6 +502,10 @@ function getAppStageIndex($status) {
         .form-control:focus, .form-select:focus { border-color: var(--nwc-blue); background: white; box-shadow: 0 0 0 5px rgba(68, 146, 212, 0.15); outline: none; }
         .map-container { border: 2px solid #e2e8f0; border-radius: 20px; overflow: hidden; position: relative; height: 350px; box-shadow: inset 0 4px 10px rgba(0,0,0,0.05); }
         .map-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(248, 250, 252, 0.85); backdrop-filter: blur(8px); z-index: 1000; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--nwc-navy); transition: 0.4s; }
+        .btn-locate-me { background: white; color: var(--nwc-navy); border: 2px solid #e2e8f0; border-radius: 50px; padding: 10px 20px; font-weight: 800; font-size: 0.9rem; transition: 0.3s; display: inline-flex; align-items: center; gap: 8px; }
+        .btn-locate-me:hover:not(:disabled) { background: var(--nwc-light); border-color: var(--nwc-blue); color: var(--nwc-blue); transform: translateY(-2px); }
+        .btn-locate-me:disabled { opacity: 0.6; cursor: not-allowed; }
+        .locate-me-wrap { position: absolute; top: 12px; left: 12px; z-index: 999; }
         
         .btn-brand { background: linear-gradient(135deg, var(--nwc-navy), var(--nwc-blue)); color: white; border: none; border-radius: 16px; padding: 18px; font-weight: 900; font-size: 1.1rem; width: 100%; transition: all 0.4s; box-shadow: 0 10px 25px rgba(9, 46, 84, 0.2); }
         .btn-brand:hover { transform: translateY(-4px); box-shadow: 0 15px 35px rgba(9, 46, 84, 0.3); color: white; }
@@ -687,9 +691,14 @@ function getAppStageIndex($status) {
                                     <i class="fa-solid fa-map-location-dot fs-1 mb-3 text-muted"></i>
                                     <span class="fw-bold">الرجاء اختيار المدينة أولاً لتفعيل الخريطة</span>
                                 </div>
+                                <div class="locate-me-wrap">
+                                    <button type="button" class="btn-locate-me" id="locateMeBtn" onclick="locateMe()">
+                                        <i class="fa-solid fa-location-crosshairs"></i> <span id="locateMeBtnText">حدد موقعي الحالي</span>
+                                    </button>
+                                </div>
                                 <div id="propertyMap" style="height: 100%; width: 100%;"></div>
                             </div>
-                            <small class="text-success fw-bold d-block mt-2" id="gpsStatus"><i class="fa-solid fa-circle-info"></i> انقر على الخريطة لتثبيت مؤشر الـ GPS بدقة.</small>
+                            <small class="text-success fw-bold d-block mt-2" id="gpsStatus"><i class="fa-solid fa-circle-info"></i> انقر على الخريطة أو اضغط "حدد موقعي الحالي" لتثبيت مؤشر الـ GPS بدقة.</small>
                         </div>
                     </div>
                     <button type="submit" class="btn-brand mt-4" id="submitBtn"><i class="fa-solid fa-paper-plane me-1"></i> إرسال الطلب ومطابقة الصك آلياً</button>
@@ -1040,7 +1049,7 @@ function getAppStageIndex($status) {
             
             document.getElementById('latitude').value = "";
             document.getElementById('longitude').value = "";
-            document.getElementById('gpsStatus').innerHTML = `<span class="text-danger fw-bold"><i class="fa-solid fa-map-pin"></i> يرجى النقر على الخريطة لتحديد موقع عقارك بدقة</span>`;
+            document.getElementById('gpsStatus').innerHTML = `<span class="text-danger fw-bold"><i class="fa-solid fa-map-pin"></i> يرجى النقر على الخريطة أو الضغط على "حدد موقعي الحالي" لتحديد موقع عقارك بدقة</span>`;
             
             if (marker) {
                 map.removeLayer(marker);
@@ -1069,6 +1078,65 @@ function getAppStageIndex($status) {
             document.getElementById('longitude').value = lng;
             document.getElementById('gpsStatus').innerHTML = `<span class="text-success fw-bold"><i class="fa-solid fa-circle-check"></i> تم التحديد بدقة: ${lat.toFixed(4)}, ${lng.toFixed(4)}</span>`;
         });
+
+        // ============== زر "حدد موقعي الحالي" باستخدام GPS المتصفح ==============
+        function locateMe() {
+            let citySelect = document.getElementById('citySelect');
+            if (!citySelect.value) {
+                Swal.fire({ icon: 'warning', title: 'اختر المدينة أولاً', text: 'يرجى اختيار المدينة قبل تحديد موقعك الحالي.', confirmButtonColor: '#092e54' });
+                return;
+            }
+
+            if (!navigator.geolocation) {
+                Swal.fire({ icon: 'error', title: 'غير مدعوم', text: 'متصفحك لا يدعم خدمة تحديد الموقع الجغرافي.', confirmButtonColor: '#092e54' });
+                return;
+            }
+
+            let btn = document.getElementById('locateMeBtn');
+            let btnText = document.getElementById('locateMeBtnText');
+            btn.disabled = true;
+            let originalText = btnText.textContent;
+            btnText.textContent = 'جاري تحديد الموقع...';
+            btn.querySelector('i').className = 'fa-solid fa-spinner fa-spin';
+
+            navigator.geolocation.getCurrentPosition(
+                function(position) {
+                    let lat = position.coords.latitude;
+                    let lng = position.coords.longitude;
+                    let latlng = L.latLng(lat, lng);
+
+                    if (marker) {
+                        marker.setLatLng(latlng);
+                    } else {
+                        marker = L.marker(latlng).addTo(map);
+                    }
+
+                    document.getElementById('latitude').value = lat;
+                    document.getElementById('longitude').value = lng;
+                    document.getElementById('gpsStatus').innerHTML = `<span class="text-success fw-bold"><i class="fa-solid fa-location-crosshairs"></i> تم تحديد موقعك الحالي بدقة: ${lat.toFixed(4)}, ${lng.toFixed(4)}</span>`;
+
+                    map.flyTo(latlng, 17, { animate: true, duration: 1.5 });
+
+                    btn.disabled = false;
+                    btnText.textContent = originalText;
+                    btn.querySelector('i').className = 'fa-solid fa-location-crosshairs';
+                },
+                function(error) {
+                    btn.disabled = false;
+                    btnText.textContent = originalText;
+                    btn.querySelector('i').className = 'fa-solid fa-location-crosshairs';
+
+                    let msg = 'تعذر تحديد موقعك الحالي، يرجى التحديد يدوياً بالنقر على الخريطة.';
+                    if (error.code === error.PERMISSION_DENIED) {
+                        msg = 'تم رفض إذن الوصول للموقع. يرجى تفعيل صلاحية الموقع للمتصفح من إعدادات جهازك ثم إعادة المحاولة.';
+                    } else if (error.code === error.TIMEOUT) {
+                        msg = 'انتهت مهلة تحديد الموقع، يرجى المحاولة مرة أخرى أو التحديد يدوياً.';
+                    }
+                    Swal.fire({ icon: 'error', title: 'تعذر تحديد الموقع', text: msg, confirmButtonColor: '#092e54' });
+                },
+                { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+            );
+        }
 
         document.getElementById('applicationForm').addEventListener('submit', function(e) {
             e.preventDefault();

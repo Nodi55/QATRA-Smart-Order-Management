@@ -218,7 +218,6 @@ $stmtHistory->execute([$emp_id]);
 $completedTasks = $stmtHistory->fetchAll(PDO::FETCH_ASSOC);
 
 ?>
-
 <!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
