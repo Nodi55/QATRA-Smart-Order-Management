@@ -13,6 +13,21 @@ require_once 'db_connect.php';
 $msg = ""; $msgType = "";
 $empId = $_SESSION['emp_id'];
 
+// تهيئة الجدول ليقبل عمود الملاحظات إذا لم يكن موجوداً بعد
+try {
+    $pdo->query("SELECT installer_notes FROM installation_task LIMIT 1");
+} catch (Exception $e) {
+    $pdo->exec("ALTER TABLE installation_task ADD COLUMN installer_notes TEXT NULL");
+}
+
+// تحديد بادئة الرقم التسلسلي للعداد حسب نوع الخدمة: شبكة مياه => W , صرف صحي => S
+function getMeterSerialPrefix($srvName) {
+    if (strpos($srvName, 'صرف') !== false) {
+        return 'S';
+    }
+    return 'W'; // الافتراضي لخدمات شبكة المياه وأي خدمة أخرى غير الصرف الصحي
+}
+
 // تهيئة ذكية: تأكيد وجود جدول الإشعارات والتحذيرات للموظفين
 try {
     $pdo->query("SELECT 1 FROM employee_notification LIMIT 1");
@@ -59,23 +74,49 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['complete_task'])) {
     $pipeLength = floatval($_POST['pipe_length']);
     $pipeDiameter = floatval($_POST['pipe_diameter']);
     $initialReading = floatval($_POST['initial_reading']);
-    $mtrSerial = trim($_POST['mtr_serial']);
+    $mtrSerialInput = trim($_POST['mtr_serial']);
     $mtrType = $_POST['mtr_type'];
 
-    if (empty($mtrSerial)) {
+    // الملاحظات حقل اختياري بالكامل
+    $installerNotes = isset($_POST['installer_notes']) ? trim($_POST['installer_notes']) : '';
+    $installerNotes = $installerNotes !== '' ? $installerNotes : null;
+
+    if (empty($mtrSerialInput)) {
         $msg = "خطأ: يجب إدخال الرقم التسلسلي للعداد.";
+        $msgType = "error";
+    } elseif ($initialReading < 0) {
+        // القراءة الافتتاحية للعداد لا يجوز أن تكون قيمة سالبة
+        $msg = "خطأ: لا يمكن أن تكون القراءة الافتتاحية للعداد قيمة سالبة.";
+        $msgType = "error";
+    } elseif ($pipeLength < 0) {
+        $msg = "خطأ: لا يمكن أن يكون طول الأنبوب قيمة سالبة.";
         $msgType = "error";
     } else {
         try {
             $pdo->beginTransaction();
 
+            // جلب نوع الخدمة الخاص بالطلب لتحديد بادئة الرقم التسلسلي الصحيحة (W لشبكة المياه / S للصرف الصحي)
+            $stmtSrv = $pdo->prepare("
+                SELECT st.srv_name FROM application a 
+                JOIN service_type st ON a.srv_id = st.srv_id 
+                WHERE a.app_id = ?
+            ");
+            $stmtSrv->execute([$appId]);
+            $srvName = $stmtSrv->fetchColumn();
+            $expectedPrefix = getMeterSerialPrefix($srvName ?: '');
+
+            // تطبيع الرقم التسلسلي: إزالة أي بادئة W- أو S- مدخلة يدوياً، ثم فرض البادئة الصحيحة دائماً من السيرفر
+            $cleanSerial = preg_replace('/^(W|S)-?/i', '', $mtrSerialInput);
+            $cleanSerial = trim($cleanSerial, "- \t\n\r\0\x0B");
+            $mtrSerial = $expectedPrefix . '-' . $cleanSerial;
+
             // 1. تحديث جدول تفاصيل مهمة التركيب
             $stmtUpdateTask = $pdo->prepare("
                 UPDATE installation_task 
-                SET pipe_length = ?, pipe_diameter = ?, initial_reading = ? 
+                SET pipe_length = ?, pipe_diameter = ?, initial_reading = ?, installer_notes = ? 
                 WHERE task_id = ?
             ");
-            $stmtUpdateTask->execute([$pipeLength, $pipeDiameter, $initialReading, $taskId]);
+            $stmtUpdateTask->execute([$pipeLength, $pipeDiameter, $initialReading, $installerNotes, $taskId]);
 
             // 2. التحقق من وجود الحساب الموحد للعميل، وإنشائه إن لم يكن موجوداً (كإجراء أمني مرن)
             $stmtCheckAcc = $pdo->prepare("
@@ -226,6 +267,8 @@ $completedTasks = $stmtCompletedTasks->fetchAll(PDO::FETCH_ASSOC);
         
         .map-box { height: 350px; border-radius: 16px; border: 2px solid #e2e8f0; overflow: hidden; }
         .form-label { font-weight: 700; color: var(--navy); }
+
+        .serial-prefix-addon { font-weight: 900; min-width: 52px; justify-content: center; background: #eef2f6; color: var(--navy); }
         
         .page-view { display: none; animation: fadeIn 0.4s; }
         .page-view.active { display: block; }
@@ -343,14 +386,14 @@ $completedTasks = $stmtCompletedTasks->fetchAll(PDO::FETCH_ASSOC);
                                 </div>
 
                                 <div class="card-title text-success"><i class="fa-solid fa-file-invoice"></i> إدخال البيانات الفنية للعداد والتركيب</div>
-                                <form method="POST" id="installForm">
+                                <form method="POST" id="installForm" onsubmit="return prepareSubmit(event)">
                                     <input type="hidden" name="task_id" id="form_task_id" value="<?= $activeTasks[0]['task_id'] ?>">
                                     <input type="hidden" name="app_id" id="form_app_id" value="<?= $activeTasks[0]['app_id'] ?>">
                                     
                                     <div class="row g-3">
                                         <div class="col-md-6">
                                             <label class="form-label">طول الأنبوب المستخدم (متر)</label>
-                                            <input type="number" step="0.1" name="pipe_length" class="form-control" placeholder="مثال: 12.5" required>
+                                            <input type="number" step="0.1" min="0" name="pipe_length" class="form-control" placeholder="مثال: 12.5" required>
                                         </div>
                                         <div class="col-md-6">
                                             <label class="form-label">قطر الأنبوب (بوصة / Inch)</label>
@@ -364,7 +407,12 @@ $completedTasks = $stmtCompletedTasks->fetchAll(PDO::FETCH_ASSOC);
                                         </div>
                                         <div class="col-md-6">
                                             <label class="form-label">الرقم التسلسلي للعداد الجديد (Serial)</label>
-                                            <input type="text" name="mtr_serial" class="form-control" placeholder="أدخل الرقم التسلسلي الفريد" required>
+                                            <div class="input-group">
+                                                <span class="input-group-text serial-prefix-addon" id="serialPrefixAddon">W-</span>
+                                                <input type="text" id="mtr_serial_suffix" class="form-control" placeholder="أدخل الجزء المتبقي من الرقم" required>
+                                            </div>
+                                            <input type="hidden" name="mtr_serial" id="mtr_serial_hidden">
+                                            <small class="text-muted">تُضاف البادئة تلقائياً حسب نوع الخدمة: W لشبكة المياه، S للصرف الصحي</small>
                                         </div>
                                         <div class="col-md-6">
                                             <label class="form-label">نوع العداد المخصص</label>
@@ -375,7 +423,15 @@ $completedTasks = $stmtCompletedTasks->fetchAll(PDO::FETCH_ASSOC);
                                         </div>
                                         <div class="col-md-12">
                                             <label class="form-label">القراءة الافتتاحية المبدئية للعداد (م³)</label>
-                                            <input type="number" step="0.01" name="initial_reading" class="form-control" value="0.00" required>
+                                            <input type="number" step="0.01" min="0" name="initial_reading" class="form-control" value="0.00" required>
+                                            <small class="text-muted">لا يُسمح بإدخال قيمة سالبة</small>
+                                        </div>
+                                        <div class="col-md-12">
+                                            <label class="form-label">
+                                                ملاحظات إضافية
+                                                <span class="badge bg-light text-muted border fw-normal ms-1">اختياري</span>
+                                            </label>
+                                            <textarea name="installer_notes" class="form-control" rows="3" placeholder="أضف أي ملاحظات ميدانية حول التركيب إن وجدت (غير إلزامي)..."></textarea>
                                         </div>
                                     </div>
 
@@ -407,6 +463,7 @@ $completedTasks = $stmtCompletedTasks->fetchAll(PDO::FETCH_ASSOC);
                                         <th>الرقم التسلسلي</th>
                                         <th>نوع العداد</th>
                                         <th>مواصفات التوصيل</th>
+                                        <th>التقرير الكامل</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -421,6 +478,11 @@ $completedTasks = $stmtCompletedTasks->fetchAll(PDO::FETCH_ASSOC);
                                         <td class="small text-muted fw-bold">
                                             أنبوب: <?= $comp['pipe_length']; ?>م<br>
                                             القطر: <?= $comp['pipe_diameter']; ?> بوصة
+                                        </td>
+                                        <td>
+                                            <a href="installation_report.php?task_id=<?= (int)$comp['task_id']; ?>" target="_blank" class="btn btn-sm btn-outline-primary rounded-pill fw-bold">
+                                                <i class="fa-solid fa-file-lines me-1"></i> فتح التقرير
+                                            </a>
                                         </td>
                                     </tr>
                                     <?php endforeach; ?>
@@ -438,6 +500,47 @@ $completedTasks = $stmtCompletedTasks->fetchAll(PDO::FETCH_ASSOC);
     <script>
         let currentMap;
         let currentMarker;
+        let currentSrvName = "";
+
+        // تحديد بادئة الرقم التسلسلي حسب نوع الخدمة: مياه => W , صرف صحي => S
+        function getSerialPrefix(srvName) {
+            if (srvName && srvName.indexOf('صرف') !== -1) return 'S';
+            return 'W';
+        }
+
+        function updateSerialPrefix(srvName) {
+            currentSrvName = srvName || "";
+            const prefix = getSerialPrefix(currentSrvName);
+            document.getElementById('serialPrefixAddon').innerText = prefix + '-';
+        }
+
+        // قبل إرسال النموذج: تجميع الرقم التسلسلي الكامل (بادئة + الجزء المدخل) والتحقق من عدم سالبية القراءة
+        function prepareSubmit(e) {
+            const suffix = document.getElementById('mtr_serial_suffix').value.trim();
+            if (!suffix) {
+                Swal.fire({ icon: 'error', title: 'خطأ', text: 'يرجى إدخال الرقم التسلسلي للعداد.', confirmButtonColor: '#0b457f' });
+                e.preventDefault();
+                return false;
+            }
+            const prefix = getSerialPrefix(currentSrvName);
+            document.getElementById('mtr_serial_hidden').value = prefix + '-' + suffix;
+
+            const readingInput = document.querySelector('input[name="initial_reading"]');
+            if (parseFloat(readingInput.value) < 0) {
+                Swal.fire({ icon: 'error', title: 'خطأ', text: 'لا يمكن أن تكون القراءة الافتتاحية للعداد قيمة سالبة.', confirmButtonColor: '#0b457f' });
+                e.preventDefault();
+                return false;
+            }
+
+            const pipeInput = document.querySelector('input[name="pipe_length"]');
+            if (parseFloat(pipeInput.value) < 0) {
+                Swal.fire({ icon: 'error', title: 'خطأ', text: 'لا يمكن أن يكون طول الأنبوب قيمة سالبة.', confirmButtonColor: '#0b457f' });
+                e.preventDefault();
+                return false;
+            }
+
+            return true;
+        }
 
         // إدارة التبويبات والصفحات
         function openPage(pageId, element) {
@@ -460,6 +563,10 @@ $completedTasks = $stmtCompletedTasks->fetchAll(PDO::FETCH_ASSOC);
             // تحديث الحقول المخفية للنموذج
             document.getElementById('form_task_id').value = task.task_id;
             document.getElementById('form_app_id').value = task.app_id;
+
+            // تحديث بادئة الرقم التسلسلي حسب نوع خدمة المهمة المختارة
+            updateSerialPrefix(task.srv_name);
+            document.getElementById('mtr_serial_suffix').value = '';
 
             // تحديث موقع الخريطة والماركر
             if (currentMap && task.latitude && task.longitude) {
@@ -489,6 +596,9 @@ $completedTasks = $stmtCompletedTasks->fetchAll(PDO::FETCH_ASSOC);
 
                 currentMarker = L.marker(initialCoords).addTo(currentMap);
                 document.getElementById('btnGoogleMap').href = `https://www.google.com/maps/dir/?api=1&destination=${firstTask.latitude},${firstTask.longitude}`;
+
+                // تهيئة بادئة الرقم التسلسلي لأول مهمة معروضة افتراضياً
+                updateSerialPrefix(firstTask.srv_name);
             <?php endif; ?>
         });
     </script>
