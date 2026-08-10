@@ -19,50 +19,6 @@ if (isset($_GET['success_msg'])) {
 
 $emp_id = $_SESSION['emp_id'];
 
-// تهيئة الجدول ليقبل عمود الملاحظات الاختيارية إذا لم يكن موجوداً بعد
-try {
-    $pdo->query("SELECT inspector_notes FROM field_inspection LIMIT 1");
-} catch (Exception $e) {
-    $pdo->exec("ALTER TABLE field_inspection ADD COLUMN inspector_notes TEXT NULL");
-}
-
-// تهيئة ذكية: تأكيد وجود جدول الإشعارات والتحذيرات للموظفين
-try {
-    $pdo->query("SELECT 1 FROM employee_notification LIMIT 1");
-} catch (Exception $e) {
-    $pdo->exec("
-    CREATE TABLE IF NOT EXISTS `employee_notification` (
-    `notif_id` int NOT NULL AUTO_INCREMENT,
-    `emp_id` int NOT NULL,
-    `message_content` text NOT NULL,
-    `created_at` datetime DEFAULT CURRENT_TIMESTAMP,
-    `is_read` tinyint(1) DEFAULT '0',
-    `notif_type` varchar(50) DEFAULT 'info',
-    PRIMARY KEY (`notif_id`),
-    KEY `emp_id` (`emp_id`),
-    CONSTRAINT `employee_notification_ibfk_1` FOREIGN KEY (`emp_id`) REFERENCES `company_employee` (`emp_id`) ON DELETE CASCADE
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
-    ");
-}
-
-// معالجة قراءة إشعارات الموظف
-if (isset($_GET['read_notif'])) {
-    $notifId = intval($_GET['read_notif']);
-    $pdo->prepare("UPDATE employee_notification SET is_read = 1 WHERE notif_id = ? AND emp_id = ?")->execute([$notifId, $emp_id]);
-    header("Location: inspection_panel.php");
-    exit;
-}
-
-// جلب إشعارات الموظف الحالي غير المقروءة
-$empNotifs = [];
-try {
-    $notifStmt = $pdo->prepare("SELECT * FROM employee_notification WHERE emp_id = ? AND is_read = 0 ORDER BY created_at DESC");
-    $notifStmt->execute([$emp_id]);
-    $empNotifs = $notifStmt->fetchAll(PDO::FETCH_ASSOC);
-} catch (Exception $e) {
-    // صامتة
-}
-
 // =========================================================
 // معالجة تقديم تقرير الفحص الميداني
 // =========================================================
@@ -73,8 +29,6 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['submit_inspection'])) 
     $doors_windows_installed = isset($_POST['doors_windows_installed']) ? 1 : 0;
     $meter_spot_painted = isset($_POST['meter_spot_painted']) ? 1 : 0;
     $inspection_result = $_POST['inspection_result']; // 'Passed' or 'Failed'
-    $inspector_notes = isset($_POST['inspector_notes']) ? trim($_POST['inspector_notes']) : null;
-    if ($inspector_notes === '') { $inspector_notes = null; } // الملاحظات اختيارية
 
     $site_photos_url = "";
     
@@ -111,10 +65,10 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['submit_inspection'])) 
             $stmtUpdate = $pdo->prepare("
                 UPDATE field_inspection 
                 SET building_readiness = ?, doors_windows_installed = ?, meter_spot_painted = ?, 
-                    site_photos_url = ?, inspection_result = ?, inspector_notes = ? 
+                    site_photos_url = ?, inspection_result = ? 
                 WHERE insp_id = ?
             ");
-            $stmtUpdate->execute([$building_readiness, $doors_windows_installed, $meter_spot_painted, $site_photos_url, $inspection_result, $inspector_notes, $insp_id]);
+            $stmtUpdate->execute([$building_readiness, $doors_windows_installed, $meter_spot_painted, $site_photos_url, $inspection_result, $insp_id]);
 
             // 2. تحديث الطلب بناءً على النتيجة
             if ($inspection_result == 'Passed') {
@@ -321,44 +275,6 @@ $completedTasks = $stmtHistory->fetchAll(PDO::FETCH_ASSOC);
         </div>
 
         <div class="content-area">
-            <!-- مركز التنبيهات والإنذارات الإدارية للموظف -->
-            <?php if (!empty($empNotifs)): ?>
-                <div class="row mb-4 w-100 mx-auto px-2">
-                    <div class="col-12">
-                        <div class="card border-0 shadow-sm rounded-4" style="background: linear-gradient(135deg, #fffbeb 0%, #fff7ed 100%); border-right: 6px solid #f97316 !important; width: 100%;">
-                            <div class="card-body p-4">
-                                <div class="d-flex justify-content-between align-items-center mb-3">
-                                    <h5 class="fw-black text-warning m-0"><i class="fa-solid fa-bell fa-shake me-2"></i> مركز التنبيهات والإنذارات الإدارية الحرج!</h5>
-                                    <span class="badge bg-warning text-dark px-3 py-2 fw-bold"><?= count($empNotifs); ?> تنبيهات معلقة</span>
-                                </div>
-                                <div class="space-y-3">
-                                    <?php foreach ($empNotifs as $notif): 
-                                        $isWarning = ($notif['notif_type'] == 'warning');
-                                        $iconClass = $isWarning ? 'fa-triangle-exclamation text-danger' : 'fa-map-location-dot text-info';
-                                        $badgeClass = $isWarning ? 'bg-danger text-white' : 'bg-info text-dark';
-                                        $badgeLabel = $isWarning ? 'إنذار إداري من المدير' : 'مهمة خارج النطاق الجغرافي';
-                                    ?>
-                                        <div class="p-3 bg-white rounded-3 border d-flex justify-content-between align-items-center mb-2">
-                                            <div class="d-flex align-items-center gap-3">
-                                                <div class="rounded-circle bg-light d-flex align-items-center justify-content-center" style="width: 45px; height: 45px;">
-                                                    <i class="fa-solid <?= $iconClass; ?> fs-5"></i>
-                                                </div>
-                                                <div class="text-start">
-                                                    <span class="badge <?= $badgeClass; ?> fw-bold mb-1" style="font-size: 0.75rem;"><?= $badgeLabel; ?></span>
-                                                    <p class="m-0 fw-bold text-dark" style="font-size: 0.95rem;"><?= htmlspecialchars($notif['message_content']); ?></p>
-                                                    <small class="text-muted small"><i class="fa-regular fa-clock me-1"></i> <?= $notif['created_at']; ?></small>
-                                                </div>
-                                            </div>
-                                            <a href="?read_notif=<?= $notif['notif_id']; ?>" class="btn btn-sm btn-outline-secondary rounded-pill fw-bold"><i class="fa-solid fa-check me-1"></i> تحديد كمقروء</a>
-                                        </div>
-                                    <?php endforeach; ?>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            <?php endif; ?>
-
             <?php if ($msg): ?>
                 <script>
                     document.addEventListener('DOMContentLoaded', function() {
@@ -432,6 +348,7 @@ $completedTasks = $stmtHistory->fetchAll(PDO::FETCH_ASSOC);
                                     <div class="card-title text-success"><i class="fa-solid fa-square-poll-horizontal"></i> استمارة الجاهزية والرفع الميداني</div>
                                     
                                     <form method="POST" enctype="multipart/form-data" id="inspectionForm">
+                                        <input type="hidden" name="submit_inspection" value="1">
                                         <input type="hidden" name="insp_id" id="form-insp-id">
                                         <input type="hidden" name="app_id" id="form-app-id">
                                         <input type="hidden" name="inspection_result" id="form-result" value="Passed">
@@ -490,19 +407,6 @@ $completedTasks = $stmtHistory->fetchAll(PDO::FETCH_ASSOC);
                                             </div>
                                         </div>
 
-                                        <!-- ملاحظات الفني (اختيارية) -->
-                                        <div class="mb-4">
-                                            <button type="button" class="btn btn-outline-secondary btn-sm rounded-pill fw-bold" id="toggle-notes-btn" onclick="toggleNotes()">
-                                                <i class="fa-solid fa-note-sticky me-1"></i> إضافة ملاحظة (اختياري)
-                                            </button>
-                                            <div id="notes-field-wrapper" class="mt-3" style="display: none;">
-                                                <label class="fw-bold text-dark mb-2 d-block">
-                                                    <i class="fa-solid fa-pen text-primary me-1"></i> ملاحظات الفني الميدانية
-                                                </label>
-                                                <textarea name="inspector_notes" id="inspector-notes-input" class="form-control" rows="3" placeholder="أي ملاحظات إضافية عن الموقع أو الفحص (غير إلزامي)..."></textarea>
-                                            </div>
-                                        </div>
-
                                         <!-- قرار الاعتماد الميداني النهائي -->
                                         <div class="mb-4 text-center">
                                             <label class="fw-black text-dark mb-3 d-block"><i class="fa-solid fa-circle-question text-info me-1"></i> قرار الاعتماد الفني النهائي ومطابقة المعايير:</label>
@@ -543,12 +447,11 @@ $completedTasks = $stmtHistory->fetchAll(PDO::FETCH_ASSOC);
                                         <th>معايير الجاهزية الميدانية المسجلة</th>
                                         <th>إثبات الفحص</th>
                                         <th>القرار الفني النهائي</th>
-                                        <th>التقرير الرسمي</th>
                                     </tr>
                                 </thead>
                                 <tbody>
                                     <?php if(empty($completedTasks)): ?>
-                                        <tr><td colspan="7" class="text-center py-5 text-muted fw-bold">لم تقم بإتمام أي فحص ميداني بعد.</td></tr>
+                                        <tr><td colspan="6" class="text-center py-5 text-muted fw-bold">لم تقم بإتمام أي فحص ميداني بعد.</td></tr>
                                     <?php else: ?>
                                         <?php foreach($completedTasks as $history): ?>
                                             <tr>
@@ -572,13 +475,6 @@ $completedTasks = $stmtHistory->fetchAll(PDO::FETCH_ASSOC);
                                                         '<span class="badge bg-success rounded-pill px-3 py-2"><i class="fa-solid fa-circle-check"></i> جاهز ومطابق</span>' : 
                                                         '<span class="badge bg-danger rounded-pill px-3 py-2"><i class="fa-solid fa-circle-xmark"></i> غير مطابق ومرفوض</span>' 
                                                     ?>
-                                                </td>
-                                                <td>
-                                                    <a href="inspection_report.php?insp_id=<?= $history['insp_id']; ?>" 
-                                                       target="_blank" 
-                                                       class="btn btn-sm btn-outline-primary rounded-pill fw-bold">
-                                                        <i class="fa-solid fa-file-lines me-1"></i> عرض التقرير
-                                                    </a>
                                                 </td>
                                             </tr>
                                         <?php endforeach; ?>
@@ -625,11 +521,6 @@ $completedTasks = $stmtHistory->fetchAll(PDO::FETCH_ASSOC);
             document.getElementById('form-insp-id').value = task.insp_id;
             document.getElementById('form-app-id').value = task.app_id;
             
-            // تصفير حقل الملاحظات الاختياري عند التبديل بين المهام
-            document.getElementById('inspector-notes-input').value = '';
-            document.getElementById('notes-field-wrapper').style.display = 'none';
-            document.getElementById('toggle-notes-btn').innerHTML = '<i class="fa-solid fa-note-sticky me-1"></i> إضافة ملاحظة (اختياري)';
-
             // إعداد رابط الملاحة والخرائط
             const mapUrl = `https://www.google.com/maps/dir/?api=1&destination=${task.latitude},${task.longitude}`;
             document.getElementById('google-maps-btn').href = mapUrl;
@@ -651,18 +542,6 @@ $completedTasks = $stmtHistory->fetchAll(PDO::FETCH_ASSOC);
                 }
                 reader.readAsDataURL(input.files[0]);
             }
-        }
-
-        // إظهار/إخفاء حقل الملاحظات الاختياري
-        function toggleNotes() {
-            const wrapper = document.getElementById('notes-field-wrapper');
-            const btn = document.getElementById('toggle-notes-btn');
-            const isHidden = wrapper.style.display === 'none';
-            wrapper.style.display = isHidden ? 'block' : 'none';
-            btn.innerHTML = isHidden 
-                ? '<i class="fa-solid fa-xmark me-1"></i> إخفاء الملاحظات'
-                : '<i class="fa-solid fa-note-sticky me-1"></i> إضافة ملاحظة (اختياري)';
-            if (isHidden) { document.getElementById('inspector-notes-input').focus(); }
         }
 
         // تحديد نتيجة الفحص النهائي
