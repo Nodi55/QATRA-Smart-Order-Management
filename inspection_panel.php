@@ -19,6 +19,13 @@ if (isset($_GET['success_msg'])) {
 
 $emp_id = $_SESSION['emp_id'];
 
+// تهيئة الجدول ليقبل عمود الملاحظات الاختيارية إذا لم يكن موجوداً بعد
+try {
+    $pdo->query("SELECT inspector_notes FROM field_inspection LIMIT 1");
+} catch (Exception $e) {
+    $pdo->exec("ALTER TABLE field_inspection ADD COLUMN inspector_notes TEXT NULL");
+}
+
 // تهيئة ذكية: تأكيد وجود جدول الإشعارات والتحذيرات للموظفين
 try {
     $pdo->query("SELECT 1 FROM employee_notification LIMIT 1");
@@ -66,6 +73,8 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['submit_inspection'])) 
     $doors_windows_installed = isset($_POST['doors_windows_installed']) ? 1 : 0;
     $meter_spot_painted = isset($_POST['meter_spot_painted']) ? 1 : 0;
     $inspection_result = $_POST['inspection_result']; // 'Passed' or 'Failed'
+    $inspector_notes = isset($_POST['inspector_notes']) ? trim($_POST['inspector_notes']) : null;
+    if ($inspector_notes === '') { $inspector_notes = null; } // الملاحظات اختيارية
 
     $site_photos_url = "";
     
@@ -102,10 +111,10 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['submit_inspection'])) 
             $stmtUpdate = $pdo->prepare("
                 UPDATE field_inspection 
                 SET building_readiness = ?, doors_windows_installed = ?, meter_spot_painted = ?, 
-                    site_photos_url = ?, inspection_result = ? 
+                    site_photos_url = ?, inspection_result = ?, inspector_notes = ? 
                 WHERE insp_id = ?
             ");
-            $stmtUpdate->execute([$building_readiness, $doors_windows_installed, $meter_spot_painted, $site_photos_url, $inspection_result, $insp_id]);
+            $stmtUpdate->execute([$building_readiness, $doors_windows_installed, $meter_spot_painted, $site_photos_url, $inspection_result, $inspector_notes, $insp_id]);
 
             // 2. تحديث الطلب بناءً على النتيجة
             if ($inspection_result == 'Passed') {
@@ -474,6 +483,19 @@ $completedTasks = $stmtHistory->fetchAll(PDO::FETCH_ASSOC);
                                             </div>
                                         </div>
 
+                                        <!-- ملاحظات الفني (اختيارية) -->
+                                        <div class="mb-4">
+                                            <button type="button" class="btn btn-outline-secondary btn-sm rounded-pill fw-bold" id="toggle-notes-btn" onclick="toggleNotes()">
+                                                <i class="fa-solid fa-note-sticky me-1"></i> إضافة ملاحظة (اختياري)
+                                            </button>
+                                            <div id="notes-field-wrapper" class="mt-3" style="display: none;">
+                                                <label class="fw-bold text-dark mb-2 d-block">
+                                                    <i class="fa-solid fa-pen text-primary me-1"></i> ملاحظات الفني الميدانية
+                                                </label>
+                                                <textarea name="inspector_notes" id="inspector-notes-input" class="form-control" rows="3" placeholder="أي ملاحظات إضافية عن الموقع أو الفحص (غير إلزامي)..."></textarea>
+                                            </div>
+                                        </div>
+
                                         <!-- قرار الاعتماد الميداني النهائي -->
                                         <div class="mb-4 text-center">
                                             <label class="fw-black text-dark mb-3 d-block"><i class="fa-solid fa-circle-question text-info me-1"></i> قرار الاعتماد الفني النهائي ومطابقة المعايير:</label>
@@ -596,6 +618,11 @@ $completedTasks = $stmtHistory->fetchAll(PDO::FETCH_ASSOC);
             document.getElementById('form-insp-id').value = task.insp_id;
             document.getElementById('form-app-id').value = task.app_id;
             
+            // تصفير حقل الملاحظات الاختياري عند التبديل بين المهام
+            document.getElementById('inspector-notes-input').value = '';
+            document.getElementById('notes-field-wrapper').style.display = 'none';
+            document.getElementById('toggle-notes-btn').innerHTML = '<i class="fa-solid fa-note-sticky me-1"></i> إضافة ملاحظة (اختياري)';
+
             // إعداد رابط الملاحة والخرائط
             const mapUrl = `https://www.google.com/maps/dir/?api=1&destination=${task.latitude},${task.longitude}`;
             document.getElementById('google-maps-btn').href = mapUrl;
@@ -617,6 +644,18 @@ $completedTasks = $stmtHistory->fetchAll(PDO::FETCH_ASSOC);
                 }
                 reader.readAsDataURL(input.files[0]);
             }
+        }
+
+        // إظهار/إخفاء حقل الملاحظات الاختياري
+        function toggleNotes() {
+            const wrapper = document.getElementById('notes-field-wrapper');
+            const btn = document.getElementById('toggle-notes-btn');
+            const isHidden = wrapper.style.display === 'none';
+            wrapper.style.display = isHidden ? 'block' : 'none';
+            btn.innerHTML = isHidden 
+                ? '<i class="fa-solid fa-xmark me-1"></i> إخفاء الملاحظات'
+                : '<i class="fa-solid fa-note-sticky me-1"></i> إضافة ملاحظة (اختياري)';
+            if (isHidden) { document.getElementById('inspector-notes-input').focus(); }
         }
 
         // تحديد نتيجة الفحص النهائي
