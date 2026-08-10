@@ -119,7 +119,12 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['submit_inspection'])) 
                 $stmtAppUpdate->execute([$app_id]);
 
                 // تسجيل الحركات في الأرشيف والتاريخ
-                $stmtHist = $pdo->prepare("INSERT INTO application_history (app_id, status, changed_by, change_date) VALUES (?, 'Pending_Billing', ?, NOW())");
+                // ملاحظة: عمود rejection_reason ممرّر صراحة كـ NULL لتفادي خطأ
+                // "Column 'rejection_reason' cannot be null" في حال كان العمود NOT NULL بدون DEFAULT
+                $stmtHist = $pdo->prepare("
+                    INSERT INTO application_history (app_id, status, rejection_reason, changed_by, change_date) 
+                    VALUES (?, 'Pending_Billing', NULL, ?, NOW())
+                ");
                 $stmtHist->execute([$app_id, $emp_id]);
 
             } else {
@@ -145,6 +150,8 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['submit_inspection'])) 
 
         } catch (Exception $e) {
             $pdo->rollBack();
+            // تسجيل الخطأ الفعلي في سجل الأخطاء لتسهيل التشخيص مستقبلاً
+            error_log("Inspection submit error (insp_id=$insp_id, app_id=$app_id): " . $e->getMessage());
             $msg = "حدث خطأ أثناء حفظ التقرير: " . $e->getMessage();
             $msgType = "error";
         }
