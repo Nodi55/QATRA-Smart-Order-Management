@@ -42,13 +42,13 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['submit_inspection'])) 
     $inspector_notes = $inspector_notes !== '' ? $inspector_notes : null;
 
     $site_photos_url = "";
-    
+
     // معالجة رفع الصورة الميدانية
     if (isset($_FILES['site_photo']) && $_FILES['site_photo']['error'] === UPLOAD_ERR_OK) {
         $fileTmpPath = $_FILES['site_photo']['tmp_name'];
         $fileName = $_FILES['site_photo']['name'];
         $fileExtension = strtolower(pathinfo($fileName, PATHINFO_EXTENSION));
-        
+
         // تسمية فريدة للصورة لتفادي أي تعارض
         $hashedFileName = md5(time() . $emp_id . $insp_id) . '.' . $fileExtension;
         $targetDir = "uploads/";
@@ -56,7 +56,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['submit_inspection'])) 
             @mkdir($targetDir, 0777, true);
         }
         $targetFilePath = $targetDir . $hashedFileName;
-        
+
         if (move_uploaded_file($fileTmpPath, $targetFilePath)) {
             $site_photos_url = $targetFilePath;
         } else {
@@ -83,10 +83,17 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['submit_inspection'])) 
 
             // 2. تحديث الطلب بناءً على النتيجة
             if ($inspection_result == 'Passed') {
-                // جلب رقم الصك لتحديد مساحة العقار وحساب الفاتورة
-                $stmtApp = $pdo->prepare("SELECT deed_no FROM application WHERE app_id = ?");
+                // جلب رقم الصك ونوع الخدمة لتحديد مساحة العقار وحساب الفاتورة
+                $stmtApp = $pdo->prepare("SELECT deed_no, srv_id FROM application WHERE app_id = ?");
                 $stmtApp->execute([$app_id]);
-                $deed_no = $stmtApp->fetchColumn();
+                $appRow = $stmtApp->fetch(PDO::FETCH_ASSOC);
+                $deed_no = $appRow['deed_no'];
+                $srv_id  = $appRow['srv_id'];
+
+                // جلب اسم الخدمة للتحقق من نوعها (مياه / صرف)
+                $stmtSrv = $pdo->prepare("SELECT srv_name FROM service_type WHERE srv_id = ?");
+                $stmtSrv->execute([$srv_id]);
+                $srv_name = $stmtSrv->fetchColumn();
 
                 // جلب المساحة من وزارة العدل
                 $stmtMoj = $pdo->prepare("SELECT land_area FROM moj_record WHERE deed_no = ?");
@@ -97,13 +104,24 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['submit_inspection'])) 
                     $land_area = 500; // قيمة افتراضية احتياطية في حال عدم المطابقة
                 }
 
-                // حساب تسعيرة الخدمة حسب المساحة آلياً
+                // حساب تسعيرة خدمة المياه الأساسية حسب المساحة آلياً
                 // مساحة <= 675 -> 3450 ريال
                 // مساحة أكبر من 675 -> المساحة × 10 ريال
                 if ($land_area <= 675) {
-                    $amount = 3450;
+                    $water_amount = 3450;
                 } else {
-                    $amount = $land_area * 10;
+                    $water_amount = $land_area * 10;
+                }
+
+                // إذا كانت الخدمة "صرف صحي" يُطبَّق نصف سعر المياه
+                // ملاحظة: التحقق هنا عبر srv_id أدق وأكثر ثباتاً من مطابقة النص
+                // تأكد من ضبط $DRAINAGE_SRV_ID على المعرف الفعلي لخدمة الصرف الصحي في جدول service_type
+                $DRAINAGE_SRV_ID = 2; // <-- عدّل هذه القيمة حسب srv_id الفعلي لخدمة الصرف عندك
+
+                if ((int)$srv_id === $DRAINAGE_SRV_ID || mb_stripos((string)$srv_name, 'صرف') !== false) {
+                    $amount = round($water_amount / 2, 2);
+                } else {
+                    $amount = $water_amount;
                 }
 
                 // إنشاء الفاتورة غير مدفوعة
@@ -211,52 +229,52 @@ $completedTasks = $stmtHistory->fetchAll(PDO::FETCH_ASSOC);
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
-    
+
     <style>
         :root { --navy: #092e54; --blue: #0b457f; --light: #4492d4; --bg: #f8fafc; }
         body { font-family: 'Cairo', sans-serif; background-color: var(--bg); margin: 0; padding: 0; display: flex; height: 100vh; overflow: hidden; }
-        
+
         .sidebar { width: 280px; background: var(--navy); color: white; display: flex; flex-direction: column; box-shadow: -4px 0 15px rgba(0,0,0,0.1); z-index: 100; }
         .sidebar-header { padding: 30px 20px; text-align: center; border-bottom: 1px solid rgba(255,255,255,0.1); }
         .sidebar-header i { font-size: 2.5rem; color: #7dd3fc; margin-bottom: 10px; }
         .sidebar-nav { flex: 1; padding: 20px 0; overflow-y: auto; }
         .nav-item { padding: 15px 25px; color: #cbd5e1; display: flex; align-items: center; gap: 15px; text-decoration: none; font-weight: 700; transition: 0.3s; cursor: pointer; border-right: 4px solid transparent; }
         .nav-item:hover, .nav-item.active { background: rgba(255,255,255,0.05); color: white; border-right-color: #7dd3fc; }
-        
+
         .main-wrapper { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
         .topbar { background: white; padding: 15px 30px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 2px 10px rgba(0,0,0,0.05); z-index: 50; }
         .content-area { flex: 1; display: flex; overflow: hidden; background: var(--bg); }
-        
+
         /* شاشة العمل المنقسمة لمهام الفني */
         .task-list-column { width: 380px; background: white; border-left: 1px solid #e2e8f0; display: flex; flex-direction: column; overflow-y: auto; }
         .workspace-column { flex: 1; display: flex; flex-direction: column; overflow-y: auto; padding: 30px; }
-        
+
         .task-card { padding: 20px; border-bottom: 1px solid #f1f5f9; cursor: pointer; transition: 0.2s; position: relative; }
         .task-card:hover { background: #f8fafc; }
         .task-card.active { background: #eaf3fb; border-right: 4px solid var(--light); }
-        
+
         .premium-card { background: white; border-radius: 16px; padding: 25px; box-shadow: 0 4px 15px rgba(0,0,0,0.02); margin-bottom: 25px; border: 1px solid #e2e8f0; }
         .card-title { color: var(--navy); font-weight: 900; font-size: 1.2rem; margin-bottom: 20px; display: flex; align-items: center; gap: 10px; border-bottom: 2px solid #f1f5f9; padding-bottom: 15px; }
-        
+
         .map-container { border: 2px solid #e2e8f0; border-radius: 14px; overflow: hidden; height: 260px; margin-bottom: 20px; position: relative; }
-        
+
         .requirement-row { display: flex; align-items: center; justify-content: space-between; padding: 15px; background: #f8fafc; border-radius: 12px; margin-bottom: 12px; border: 1px solid #e2e8f0; }
         .requirement-label { font-weight: 700; color: #334155; }
-        
+
         .upload-area { border: 2px dashed #cbd5e1; border-radius: 14px; padding: 30px; text-align: center; cursor: pointer; transition: 0.3s; background: #f8fafc; }
         .upload-area:hover { border-color: var(--light); background: #f0f7ff; }
 
         .notes-area { border: 1px solid #e2e8f0; border-radius: 14px; padding: 16px 18px; background: #f8fafc; }
         .notes-area textarea { border: 1px solid #cbd5e1; border-radius: 10px; resize: vertical; }
         .notes-area textarea:focus { border-color: var(--light); box-shadow: 0 0 0 3px rgba(68,146,212,0.15); outline: none; }
-        
+
         .btn-brand { background: var(--blue); color: white; border: none; padding: 14px 24px; border-radius: 10px; font-weight: 800; transition: 0.3s; }
         .btn-brand:hover { background: var(--navy); }
-        
+
         .page-view { display: none; animation: fadeIn 0.4s; height: 100%; width: 100%; }
         .page-view.active { display: flex; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-        
+
         /* تجميل شاشة الرفع وصور المعاينة */
         #photo-preview { max-height: 180px; border-radius: 10px; margin-top: 15px; display: none; }
     </style>
@@ -300,7 +318,7 @@ $completedTasks = $stmtHistory->fetchAll(PDO::FETCH_ASSOC);
 
             <!-- صفحة المهام النشطة مع واجهة SPA الفاخرة -->
             <div id="page-tasks-view" class="page-view active">
-                
+
                 <!-- عمود قائمة المهام الجانبية -->
                 <div class="task-list-column">
                     <div class="p-3 bg-light border-bottom fw-bold text-secondary text-center">المهام المعلقة في مدينتك</div>
@@ -343,13 +361,13 @@ $completedTasks = $stmtHistory->fetchAll(PDO::FETCH_ASSOC);
                                 <div class="premium-card h-100">
                                     <div class="card-title"><i class="fa-solid fa-map-location-dot text-primary"></i> موقع العقار والاتجاهات</div>
                                     <div class="map-container" id="propertyMap"></div>
-                                    
+
                                     <div class="d-grid gap-2">
                                         <a href="#" id="google-maps-btn" target="_blank" class="btn btn-outline-primary fw-bold rounded-3">
                                             <i class="fa-solid fa-compass me-2"></i> فتح اتجاهات الملاحة (Google Maps)
                                         </a>
                                     </div>
-                                    
+
                                     <div class="mt-4 p-3 bg-light rounded-3 border">
                                         <h6 class="fw-bold mb-2 text-dark"><i class="fa-solid fa-circle-info text-info me-1"></i> نصائح فني قطرة الذكي:</h6>
                                         <p class="small text-muted m-0">تأكد من مطابقة إحداثيات GPS المعروضة على الخريطة مع مكان وقوفك الفعلي أمام العقار لمنع أي غش أو تلاعب.</p>
@@ -361,7 +379,7 @@ $completedTasks = $stmtHistory->fetchAll(PDO::FETCH_ASSOC);
                             <div class="col-lg-6">
                                 <div class="premium-card">
                                     <div class="card-title text-success"><i class="fa-solid fa-square-poll-horizontal"></i> استمارة الجاهزية والرفع الميداني</div>
-                                    
+
                                     <form method="POST" enctype="multipart/form-data" id="inspectionForm">
                                         <input type="hidden" name="submit_inspection" value="1">
                                         <input type="hidden" name="insp_id" id="form-insp-id">
@@ -545,14 +563,14 @@ $completedTasks = $stmtHistory->fetchAll(PDO::FETCH_ASSOC);
         function selectTask(task) {
             document.querySelectorAll('.task-card').forEach(c => c.classList.remove('active'));
             document.getElementById('task-card-' + task.insp_id).classList.add('active');
-            
+
             document.getElementById('no-task-selected').style.display = 'none';
             document.getElementById('task-workspace').style.display = 'block';
-            
+
             // تعبئة بيانات استمارة التقرير
             document.getElementById('form-insp-id').value = task.insp_id;
             document.getElementById('form-app-id').value = task.app_id;
-            
+
             // إعداد رابط الملاحة والخرائط
             const mapUrl = `https://www.google.com/maps/dir/?api=1&destination=${task.latitude},${task.longitude}`;
             document.getElementById('google-maps-btn').href = mapUrl;
