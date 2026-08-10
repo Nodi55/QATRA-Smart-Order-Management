@@ -19,43 +19,6 @@ if (isset($_GET['success_msg'])) {
 
 $emp_id = $_SESSION['emp_id'];
 
-// تهيئة ذكية: تأكيد وجود جدول الإشعارات والتحذيرات للموظفين
-try {
-    $pdo->query("SELECT 1 FROM employee_notification LIMIT 1");
-} catch (Exception $e) {
-    $pdo->exec("
-    CREATE TABLE IF NOT EXISTS `employee_notification` (
-    `notif_id` int NOT NULL AUTO_INCREMENT,
-    `emp_id` int NOT NULL,
-    `message_content` text NOT NULL,
-    `created_at` datetime DEFAULT CURRENT_TIMESTAMP,
-    `is_read` tinyint(1) DEFAULT '0',
-    `notif_type` varchar(50) DEFAULT 'info',
-    PRIMARY KEY (`notif_id`),
-    KEY `emp_id` (`emp_id`),
-    CONSTRAINT `employee_notification_ibfk_1` FOREIGN KEY (`emp_id`) REFERENCES `company_employee` (`emp_id`) ON DELETE CASCADE
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
-    ");
-}
-
-// معالجة قراءة إشعارات الموظف
-if (isset($_GET['read_notif'])) {
-    $notifId = intval($_GET['read_notif']);
-    $pdo->prepare("UPDATE employee_notification SET is_read = 1 WHERE notif_id = ? AND emp_id = ?")->execute([$notifId, $emp_id]);
-    header("Location: inspection_panel.php");
-    exit;
-}
-
-// جلب إشعارات الموظف الحالي غير المقروءة
-$empNotifs = [];
-try {
-    $notifStmt = $pdo->prepare("SELECT * FROM employee_notification WHERE emp_id = ? AND is_read = 0 ORDER BY created_at DESC");
-    $notifStmt->execute([$emp_id]);
-    $empNotifs = $notifStmt->fetchAll(PDO::FETCH_ASSOC);
-} catch (Exception $e) {
-    // صامتة
-}
-
 // =========================================================
 // معالجة تقديم تقرير الفحص الميداني
 // =========================================================
@@ -218,6 +181,7 @@ $stmtHistory->execute([$emp_id]);
 $completedTasks = $stmtHistory->fetchAll(PDO::FETCH_ASSOC);
 
 ?>
+
 <!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
@@ -304,44 +268,6 @@ $completedTasks = $stmtHistory->fetchAll(PDO::FETCH_ASSOC);
         </div>
 
         <div class="content-area">
-            <!-- مركز التنبيهات والإنذارات الإدارية للموظف -->
-            <?php if (!empty($empNotifs)): ?>
-                <div class="row mb-4 w-100 mx-auto px-2">
-                    <div class="col-12">
-                        <div class="card border-0 shadow-sm rounded-4" style="background: linear-gradient(135deg, #fffbeb 0%, #fff7ed 100%); border-right: 6px solid #f97316 !important; width: 100%;">
-                            <div class="card-body p-4">
-                                <div class="d-flex justify-content-between align-items-center mb-3">
-                                    <h5 class="fw-black text-warning m-0"><i class="fa-solid fa-bell fa-shake me-2"></i> مركز التنبيهات والإنذارات الإدارية الحرج!</h5>
-                                    <span class="badge bg-warning text-dark px-3 py-2 fw-bold"><?= count($empNotifs); ?> تنبيهات معلقة</span>
-                                </div>
-                                <div class="space-y-3">
-                                    <?php foreach ($empNotifs as $notif): 
-                                        $isWarning = ($notif['notif_type'] == 'warning');
-                                        $iconClass = $isWarning ? 'fa-triangle-exclamation text-danger' : 'fa-map-location-dot text-info';
-                                        $badgeClass = $isWarning ? 'bg-danger text-white' : 'bg-info text-dark';
-                                        $badgeLabel = $isWarning ? 'إنذار إداري من المدير' : 'مهمة خارج النطاق الجغرافي';
-                                    ?>
-                                        <div class="p-3 bg-white rounded-3 border d-flex justify-content-between align-items-center mb-2">
-                                            <div class="d-flex align-items-center gap-3">
-                                                <div class="rounded-circle bg-light d-flex align-items-center justify-content-center" style="width: 45px; height: 45px;">
-                                                    <i class="fa-solid <?= $iconClass; ?> fs-5"></i>
-                                                </div>
-                                                <div class="text-start">
-                                                    <span class="badge <?= $badgeClass; ?> fw-bold mb-1" style="font-size: 0.75rem;"><?= $badgeLabel; ?></span>
-                                                    <p class="m-0 fw-bold text-dark" style="font-size: 0.95rem;"><?= htmlspecialchars($notif['message_content']); ?></p>
-                                                    <small class="text-muted small"><i class="fa-regular fa-clock me-1"></i> <?= $notif['created_at']; ?></small>
-                                                </div>
-                                            </div>
-                                            <a href="?read_notif=<?= $notif['notif_id']; ?>" class="btn btn-sm btn-outline-secondary rounded-pill fw-bold"><i class="fa-solid fa-check me-1"></i> تحديد كمقروء</a>
-                                        </div>
-                                    <?php endforeach; ?>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            <?php endif; ?>
-
             <?php if ($msg): ?>
                 <script>
                     document.addEventListener('DOMContentLoaded', function() {
@@ -415,6 +341,7 @@ $completedTasks = $stmtHistory->fetchAll(PDO::FETCH_ASSOC);
                                     <div class="card-title text-success"><i class="fa-solid fa-square-poll-horizontal"></i> استمارة الجاهزية والرفع الميداني</div>
                                     
                                     <form method="POST" enctype="multipart/form-data" id="inspectionForm">
+                                        <input type="hidden" name="submit_inspection" value="1">
                                         <input type="hidden" name="insp_id" id="form-insp-id">
                                         <input type="hidden" name="app_id" id="form-app-id">
                                         <input type="hidden" name="inspection_result" id="form-result" value="Passed">
