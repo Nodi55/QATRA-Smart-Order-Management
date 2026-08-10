@@ -19,6 +19,13 @@ if (isset($_GET['success_msg'])) {
 
 $emp_id = $_SESSION['emp_id'];
 
+// تهيئة الجدول ليقبل عمود الملاحظات إذا لم يكن موجوداً بعد
+try {
+    $pdo->query("SELECT inspector_notes FROM field_inspection LIMIT 1");
+} catch (Exception $e) {
+    $pdo->exec("ALTER TABLE field_inspection ADD COLUMN inspector_notes TEXT NULL");
+}
+
 // =========================================================
 // معالجة تقديم تقرير الفحص الميداني
 // =========================================================
@@ -29,6 +36,10 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['submit_inspection'])) 
     $doors_windows_installed = isset($_POST['doors_windows_installed']) ? 1 : 0;
     $meter_spot_painted = isset($_POST['meter_spot_painted']) ? 1 : 0;
     $inspection_result = $_POST['inspection_result']; // 'Passed' or 'Failed'
+
+    // الملاحظات حقل اختياري بالكامل - لا داعي للتحقق من وجوده
+    $inspector_notes = isset($_POST['inspector_notes']) ? trim($_POST['inspector_notes']) : '';
+    $inspector_notes = $inspector_notes !== '' ? $inspector_notes : null;
 
     $site_photos_url = "";
     
@@ -61,14 +72,14 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['submit_inspection'])) 
         try {
             $pdo->beginTransaction();
 
-            // 1. تحديث سجل الفحص الميداني
+            // 1. تحديث سجل الفحص الميداني (بما في ذلك الملاحظات الاختيارية)
             $stmtUpdate = $pdo->prepare("
                 UPDATE field_inspection 
                 SET building_readiness = ?, doors_windows_installed = ?, meter_spot_painted = ?, 
-                    site_photos_url = ?, inspection_result = ? 
+                    site_photos_url = ?, inspection_result = ?, inspector_notes = ? 
                 WHERE insp_id = ?
             ");
-            $stmtUpdate->execute([$building_readiness, $doors_windows_installed, $meter_spot_painted, $site_photos_url, $inspection_result, $insp_id]);
+            $stmtUpdate->execute([$building_readiness, $doors_windows_installed, $meter_spot_painted, $site_photos_url, $inspection_result, $inspector_notes, $insp_id]);
 
             // 2. تحديث الطلب بناءً على النتيجة
             if ($inspection_result == 'Passed') {
@@ -227,6 +238,10 @@ $completedTasks = $stmtHistory->fetchAll(PDO::FETCH_ASSOC);
         
         .upload-area { border: 2px dashed #cbd5e1; border-radius: 14px; padding: 30px; text-align: center; cursor: pointer; transition: 0.3s; background: #f8fafc; }
         .upload-area:hover { border-color: var(--light); background: #f0f7ff; }
+
+        .notes-area { border: 1px solid #e2e8f0; border-radius: 14px; padding: 16px 18px; background: #f8fafc; }
+        .notes-area textarea { border: 1px solid #cbd5e1; border-radius: 10px; resize: vertical; }
+        .notes-area textarea:focus { border-color: var(--light); box-shadow: 0 0 0 3px rgba(68,146,212,0.15); outline: none; }
         
         .btn-brand { background: var(--blue); color: white; border: none; padding: 14px 24px; border-radius: 10px; font-weight: 800; transition: 0.3s; }
         .btn-brand:hover { background: var(--navy); }
@@ -400,6 +415,17 @@ $completedTasks = $stmtHistory->fetchAll(PDO::FETCH_ASSOC);
                                             </div>
                                         </div>
 
+                                        <!-- ملاحظات الفني - حقل اختياري بالكامل -->
+                                        <div class="mb-4">
+                                            <label class="fw-bold text-dark mb-2" for="inspector_notes">
+                                                <i class="fa-solid fa-note-sticky text-primary me-1"></i> ملاحظات إضافية
+                                                <span class="badge bg-light text-muted border fw-normal ms-1">اختياري</span>
+                                            </label>
+                                            <div class="notes-area">
+                                                <textarea class="form-control" name="inspector_notes" id="inspector_notes" rows="3" placeholder="أضف أي ملاحظات ميدانية إضافية إن وجدت (غير إلزامي)..."></textarea>
+                                            </div>
+                                        </div>
+
                                         <!-- قرار الاعتماد الميداني النهائي -->
                                         <div class="mb-4 text-center">
                                             <label class="fw-black text-dark mb-3 d-block"><i class="fa-solid fa-circle-question text-info me-1"></i> قرار الاعتماد الفني النهائي ومطابقة المعايير:</label>
@@ -440,11 +466,12 @@ $completedTasks = $stmtHistory->fetchAll(PDO::FETCH_ASSOC);
                                         <th>معايير الجاهزية الميدانية المسجلة</th>
                                         <th>إثبات الفحص</th>
                                         <th>القرار الفني النهائي</th>
+                                        <th>التقرير الكامل</th>
                                     </tr>
                                 </thead>
                                 <tbody>
                                     <?php if(empty($completedTasks)): ?>
-                                        <tr><td colspan="6" class="text-center py-5 text-muted fw-bold">لم تقم بإتمام أي فحص ميداني بعد.</td></tr>
+                                        <tr><td colspan="7" class="text-center py-5 text-muted fw-bold">لم تقم بإتمام أي فحص ميداني بعد.</td></tr>
                                     <?php else: ?>
                                         <?php foreach($completedTasks as $history): ?>
                                             <tr>
@@ -468,6 +495,11 @@ $completedTasks = $stmtHistory->fetchAll(PDO::FETCH_ASSOC);
                                                         '<span class="badge bg-success rounded-pill px-3 py-2"><i class="fa-solid fa-circle-check"></i> جاهز ومطابق</span>' : 
                                                         '<span class="badge bg-danger rounded-pill px-3 py-2"><i class="fa-solid fa-circle-xmark"></i> غير مطابق ومرفوض</span>' 
                                                     ?>
+                                                </td>
+                                                <td>
+                                                    <a href="inspection_report.php?insp_id=<?= (int)$history['insp_id']; ?>" target="_blank" class="btn btn-sm btn-outline-primary rounded-pill fw-bold">
+                                                        <i class="fa-solid fa-file-lines me-1"></i> فتح التقرير
+                                                    </a>
                                                 </td>
                                             </tr>
                                         <?php endforeach; ?>
