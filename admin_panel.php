@@ -151,7 +151,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
         $reqRole = $_POST['req_role'];
         
         $bestTechStmt = $pdo->prepare("
-            SELECT ce.emp_id, ce.cty_id, c.cty_name
+            SELECT ce.emp_id, ce.emp_name, ce.cty_id, c.cty_name
             FROM company_employee ce
             JOIN employee_roles er ON ce.emp_id = er.emp_id 
             JOIN system_role sr ON er.role_id = sr.role_id 
@@ -184,6 +184,15 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
             }
             $pdo->prepare("INSERT INTO employee_notification (emp_id, message_content, notif_type) VALUES (?, ?, ?)")->execute([$assigned['emp_id'], $notifMsg, $notifType]);
 
+            // إشعار العميل باسم الفني - فقط بعد إسناد المدير (يدوي أو آلي من لوحته)
+            try {
+                $custForNotif = $pdo->query("SELECT cust_id FROM application WHERE app_id = " . intval($appId))->fetchColumn();
+                if ($custForNotif) {
+                    $custMsg = "تم إسناد " . ($reqRole == 'Inspection Technician' ? 'فحص' : 'تركيب') . " طلبك رقم #" . str_pad($appId, 5, '0', STR_PAD_LEFT) . " إلى الفني: " . $assigned['emp_name'] . ".";
+                    $pdo->prepare("INSERT INTO notification (message_content, cust_id) VALUES (?, ?)")->execute([$custMsg, $custForNotif]);
+                }
+            } catch (Exception $e) {}
+
             $locationNote = ($assigned['cty_id'] == $cityId) ? "في نفس المدينة" : "في مدينة مجاورة (".$assigned['cty_name'].")";
             $msg = "تم التوزيع الآلي بنجاح! أسندت المهمة لفني " . $locationNote . " وإرسال إشعار فوري له."; $msgType = "success";
         } else {
@@ -204,7 +213,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
         foreach ($tasksToDispatch as $t) {
             $reqRole = ($t['app_status'] == 'Pending_Inspection') ? 'Inspection Technician' : 'Installation Technician';
             $bestTechStmt = $pdo->prepare("
-                SELECT ce.emp_id, ce.cty_id, c.cty_name
+                SELECT ce.emp_id, ce.emp_name, ce.cty_id, c.cty_name
                 FROM company_employee ce
                 JOIN employee_roles er ON ce.emp_id = er.emp_id 
                 JOIN system_role sr ON er.role_id = sr.role_id 
@@ -236,6 +245,15 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
                     $notifType = "info";
                 }
                 $pdo->prepare("INSERT INTO employee_notification (emp_id, message_content, notif_type) VALUES (?, ?, ?)")->execute([$assigned['emp_id'], $notifMsg, $notifType]);
+
+                // إشعار العميل باسم الفني - فقط بعد إسناد المدير الجماعي
+                try {
+                    $custForNotif = $pdo->query("SELECT cust_id FROM application WHERE app_id = " . intval($t['app_id']))->fetchColumn();
+                    if ($custForNotif) {
+                        $custMsg = "تم إسناد " . ($reqRole == 'Inspection Technician' ? 'فحص' : 'تركيب') . " طلبك رقم #" . str_pad($t['app_id'], 5, '0', STR_PAD_LEFT) . " إلى الفني: " . $assigned['emp_name'] . ".";
+                        $pdo->prepare("INSERT INTO notification (message_content, cust_id) VALUES (?, ?)")->execute([$custMsg, $custForNotif]);
+                    }
+                } catch (Exception $e) {}
                 
                 $successCount++;
             } else {
@@ -283,6 +301,16 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
                 $notifType = "info";
             }
             $pdo->prepare("INSERT INTO employee_notification (emp_id, message_content, notif_type) VALUES (?, ?, ?)")->execute([$manualEmpId, $notifMsg, $notifType]);
+
+            // إشعار العميل باسم الفني بعد الإسناد اليدوي من المدير
+            try {
+                $manualTechName = $pdo->query("SELECT emp_name FROM company_employee WHERE emp_id = " . intval($manualEmpId))->fetchColumn();
+                $custForNotif = $pdo->query("SELECT cust_id FROM application WHERE app_id = " . intval($appId))->fetchColumn();
+                if ($custForNotif && $manualTechName) {
+                    $custMsg = "تم إسناد " . ($reqRole == 'Inspection Technician' ? 'فحص' : 'تركيب') . " طلبك رقم #" . str_pad($appId, 5, '0', STR_PAD_LEFT) . " إلى الفني: " . $manualTechName . ".";
+                    $pdo->prepare("INSERT INTO notification (message_content, cust_id) VALUES (?, ?)")->execute([$custMsg, $custForNotif]);
+                }
+            } catch (Exception $e) {}
 
             $msg = "تم إسناد المهمة يدوياً للفني بنجاح وتوثيق التنبيه بمركزه."; $msgType = "success";
         }
@@ -402,8 +430,11 @@ $overloadedEmps = array_filter($detailedPerformance, function($e) { return $e['a
 $unassignedTasks = $pdo->query("
     SELECT a.app_id, a.app_status, a.cty_id, c.cty_name, r.reg_name, s.srv_name
     FROM application a JOIN city c ON a.cty_id = c.cty_id JOIN region r ON c.reg_id = r.reg_id JOIN service_type s ON a.srv_id = s.srv_id
-    LEFT JOIN field_inspection fi ON a.app_id = fi.app_id
-    WHERE (a.app_status = 'Pending_Inspection' AND fi.insp_id IS NULL)
+    WHERE (a.app_status = 'Pending_Inspection' AND NOT EXISTS (SELECT 1 FROM field_inspection fi WHERE fi.app_id = a.app_id))
+    UNION
+    SELECT a.app_id, a.app_status, a.cty_id, c.cty_name, r.reg_name, s.srv_name
+    FROM application a JOIN city c ON a.cty_id = c.cty_id JOIN region r ON c.reg_id = r.reg_id JOIN service_type s ON a.srv_id = s.srv_id
+    WHERE (a.app_status = 'In_Progress' AND NOT EXISTS (SELECT 1 FROM installation_task it WHERE it.app_id = a.app_id))
 ")->fetchAll(PDO::FETCH_ASSOC);
 
 $outOfRegionTasks = $pdo->query("

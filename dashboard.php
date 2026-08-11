@@ -144,17 +144,16 @@ if ($mojRecord['owner_national_id'] !== $nationalId || $dbCustomerName !== $mojO
 
                 // التوزيع الجغرافي الذكي لفنيي الفحص لكل طلب على حدة لتقليل العبء
                 if ($appStatus == 'Pending_Inspection') {
+                    // تقييد البحث بنفس منطقة العميل (reg_id) فقط - لا يوجد إسناد تلقائي خارج المنطقة إطلاقاً
                     $bestTechStmt = $pdo->prepare("
                         SELECT ce.emp_id, ce.emp_name AS emp_name
                         FROM company_employee ce
                         JOIN employee_roles er ON ce.emp_id = er.emp_id 
                         JOIN system_role sr ON er.role_id = sr.role_id
                         JOIN city c ON ce.cty_id = c.cty_id
-                        WHERE sr.role_name = 'Inspection Technician'
-                        ORDER BY 
-                            (ce.cty_id = ?) DESC,
-                            (c.reg_id = (SELECT reg_id FROM city WHERE cty_id = ?)) DESC,
-                            ce.active_tasks_count ASC
+                        WHERE ce.is_active = 1 AND sr.role_name = 'Inspection Technician'
+                          AND c.reg_id = (SELECT reg_id FROM city WHERE cty_id = ?)
+                        ORDER BY (ce.cty_id = ?) DESC, ce.active_tasks_count ASC
                         LIMIT 1
                     ");
                     $bestTechStmt->execute([$cityId, $cityId]);
@@ -165,8 +164,16 @@ if ($mojRecord['owner_national_id'] !== $nationalId || $dbCustomerName !== $mojO
                         $pdo->prepare("INSERT INTO field_inspection (app_id, emp_id) VALUES (?, ?)")->execute([$newAppId, $bestTechId]);
                         $pdo->prepare("UPDATE company_employee SET active_tasks_count = active_tasks_count + 1 WHERE emp_id = ?")->execute([$bestTechId]);
                         $appDetailLine .= " - تم إسناد الفحص الميداني للفني: " . $bestTech['emp_name'];
+
+                        // إشعار فوري للفني نفسه
+                        try {
+                            $tNotif = "تم إسناد مهمة فحص ميداني جديدة إليك رقم #" . str_pad($newAppId, 5, '0', STR_PAD_LEFT) . ".";
+                            $pdo->prepare("INSERT INTO employee_notification (emp_id, message_content, notif_type) VALUES (?, ?, 'info')")->execute([$bestTechId, $tNotif]);
+                        } catch (Exception $e) {}
                     } else {
-                        $appDetailLine .= " - جاري تعيين فني فحص متاح قريباً";
+                        // لا يوجد فني ضمن نطاق منطقة العميل: يبقى الطلب بلا إسناد ليظهر في "مهام وتوجيه > الطوارئ"
+                        // ولا يُذكر أي اسم فني للعميل حتى يتدخل المدير
+                        $appDetailLine .= " - لا يوجد حالياً فني فحص متاح ضمن نطاق منطقتك، تم تحويل طلبك لفريق الإدارة لإسناده يدوياً.";
                     }
                 }
 
@@ -237,17 +244,16 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['pay_invoice'])) {
             $pdo->prepare("INSERT INTO activated_service (acc_id, srv_id) VALUES (?, ?)")->execute([$accId, $appData['srv_id']]);
 
             // التوجيه التلقائي الجغرافي لأقرب فني تركيبات متاح في نفس المدينة/المنطقة
+            // تقييد البحث بنفس منطقة العميل فقط
             $techStmt = $pdo->prepare("
                 SELECT ce.emp_id, ce.emp_name AS emp_name
                 FROM company_employee ce
                 JOIN employee_roles er ON ce.emp_id = er.emp_id 
                 JOIN system_role sr ON er.role_id = sr.role_id 
                 JOIN city c ON ce.cty_id = c.cty_id
-                WHERE sr.role_name = 'Installation Technician'
-                ORDER BY 
-                    (ce.cty_id = ?) DESC,
-                    (c.reg_id = (SELECT reg_id FROM city WHERE cty_id = ?)) DESC,
-                    ce.active_tasks_count ASC
+                WHERE ce.is_active = 1 AND sr.role_name = 'Installation Technician'
+                  AND c.reg_id = (SELECT reg_id FROM city WHERE cty_id = ?)
+                ORDER BY (ce.cty_id = ?) DESC, ce.active_tasks_count ASC
                 LIMIT 1
             ");
             $techStmt->execute([$appData['cty_id'], $appData['cty_id']]);
@@ -258,8 +264,14 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['pay_invoice'])) {
                 $pdo->prepare("INSERT INTO installation_task (app_id, emp_id) VALUES (?, ?)")->execute([$appId, $techId]);
                 $pdo->prepare("UPDATE company_employee SET active_tasks_count = active_tasks_count + 1 WHERE emp_id = ?")->execute([$techId]);
                 $techLine = "وإسناد تركيب العداد للفني: " . $tech['emp_name'] . ".";
+
+                try {
+                    $tNotif = "تم إسناد مهمة تركيب عداد جديدة إليك رقم #" . str_pad($appId, 5, '0', STR_PAD_LEFT) . ".";
+                    $pdo->prepare("INSERT INTO employee_notification (emp_id, message_content, notif_type) VALUES (?, ?, 'info')")->execute([$techId, $tNotif]);
+                } catch (Exception $e) {}
             } else {
-                $techLine = "وجاري تعيين فني تركيب متاح قريباً.";
+                // لا فني تركيب ضمن نطاق المنطقة: تُحال المهمة للإدارة، ولا يُذكر اسم فني للعميل
+                $techLine = "ولا يوجد حالياً فني تركيب متاح ضمن نطاق منطقتك، تم تحويل المهمة لفريق الإدارة لإسنادها يدوياً.";
             }
 
             $notifMsg = "تم تأكيد سداد الفاتورة رقم #" . str_pad($appId, 5, '0', STR_PAD_LEFT) . " بقيمة " . number_format($appData['amount'], 2) . " ريال بنجاح. تم إنشاء حسابك الموحد (ACC-" . str_pad($accId, 5, '0', STR_PAD_LEFT) . ") " . $techLine;
