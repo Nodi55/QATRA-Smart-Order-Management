@@ -25,6 +25,8 @@ try {
 }
 
 // جلب بيانات التقرير - يتم التأكد أن التقرير يخص الفني الحالي فقط ومكتمل
+// معيار الاكتمال هو pipe_length (ينطبق على المياه والصرف الصحي معاً)، وليس initial_reading
+// لأن مهام الصرف الصحي لا تملك قراءة عداد أصلاً
 $stmt = $pdo->prepare("
     SELECT it.task_id, it.app_id, it.pipe_length, it.pipe_diameter, it.initial_reading, it.installer_notes,
            m.mtr_serial, m.mtr_type,
@@ -39,7 +41,7 @@ $stmt = $pdo->prepare("
     JOIN service_type st ON a.srv_id = st.srv_id
     JOIN company_employee ce ON it.emp_id = ce.emp_id
     LEFT JOIN meter m ON it.task_id = m.task_id
-    WHERE it.task_id = ? AND it.emp_id = ? AND it.initial_reading IS NOT NULL
+    WHERE it.task_id = ? AND it.emp_id = ? AND it.pipe_length IS NOT NULL
 ");
 $stmt->execute([$taskId, $empId]);
 $report = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -47,6 +49,9 @@ $report = $stmt->fetch(PDO::FETCH_ASSOC);
 if (!$report) {
     die("<div style='text-align:center; padding:50px; font-family:tahoma;'><h2>لا يوجد تقرير مكتمل بهذا المعرّف أو ليس لديك صلاحية عرضه.</h2><a href='installation_panel.php'>العودة للوحة التركيب</a></div>");
 }
+
+// الصرف الصحي بدون عداد إطلاقاً؛ نعتمد على وجود سجل عداد فعلي وليس فقط اسم الخدمة، تحسباً لأي حالة استثنائية
+$isSewage = empty($report['mtr_serial']) && (strpos($report['srv_name'], 'صرف') !== false);
 
 $printDate = date('Y/m/d - h:i A');
 $mtrTypeText = $report['mtr_type'] == 'Smart' ? 'عداد ذكي إلكتروني (Smart)' : 'عداد ميكانيكي (Mechanical)';
@@ -86,12 +91,15 @@ $mtrTypeText = $report['mtr_type'] == 'Smart' ? 'عداد ذكي إلكترون�
         .section-title { font-weight: 900; color: var(--navy); font-size: 1.05rem; margin: 30px 0 15px; padding-bottom: 8px; border-bottom: 2px solid #f1f5f9; display: flex; align-items: center; gap: 8px; }
 
         .spec-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+        .spec-grid.cols-2 { grid-template-columns: repeat(2, 1fr); }
         .spec-box { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 16px; text-align: center; }
         .spec-box i { color: var(--light); font-size: 1.4rem; margin-bottom: 8px; display: block; }
         .spec-box .spec-label { font-size: 0.78rem; color: #94a3b8; font-weight: 800; margin-bottom: 4px; }
         .spec-box .spec-value { font-size: 1.1rem; color: var(--navy); font-weight: 900; }
 
         .notes-box { background: #fffbeb; border: 1px solid #fde68a; border-radius: 12px; padding: 16px 20px; font-weight: 600; color: #78350f; line-height: 1.9; font-size: 0.95rem; white-space: pre-line; }
+
+        .sewage-info-box { background: #eef2f6; border: 1px dashed #cbd5e1; border-radius: 12px; padding: 16px 20px; color: #475569; font-weight: 700; font-size: 0.95rem; }
 
         .signature-area { display: flex; justify-content: space-between; margin-top: 50px; padding-top: 20px; }
         .sign-box { text-align: center; width: 220px; }
@@ -157,7 +165,7 @@ $mtrTypeText = $report['mtr_type'] == 'Smart' ? 'عداد ذكي إلكترون�
         </div>
 
         <div class="report-title-bar">
-            <h2>تقرير تركيب وتفعيل العداد</h2>
+            <h2><?= $isSewage ? 'تقرير تركيب خط الصرف الصحي' : 'تقرير تركيب وتفعيل العداد' ?></h2>
             <div class="status-badge"><i class="fa-solid fa-circle-check"></i> تم التركيب والتفعيل بنجاح</div>
         </div>
 
@@ -188,6 +196,7 @@ $mtrTypeText = $report['mtr_type'] == 'Smart' ? 'عداد ذكي إلكترون�
             </div>
         </div>
 
+        <?php if (!$isSewage): ?>
         <div class="section-title"><i class="fa-solid fa-gauge-high text-primary"></i> بيانات العداد المركّب</div>
         <div class="spec-grid mb-3">
             <div class="spec-box">
@@ -206,23 +215,25 @@ $mtrTypeText = $report['mtr_type'] == 'Smart' ? 'عداد ذكي إلكترون�
                 <div class="spec-value"><?= htmlspecialchars($report['initial_reading']) ?> م³</div>
             </div>
         </div>
+        <?php else: ?>
+        <div class="section-title"><i class="fa-solid fa-toilet text-primary"></i> بيانات تركيب الصرف الصحي</div>
+        <div class="sewage-info-box mb-3">
+            <i class="fa-solid fa-circle-info me-1"></i>
+            هذه الخدمة صرف صحي ولا يوجد لها عداد قياس؛ تم توصيل الخط وتفعيل الخدمة بالاعتماد على مواصفات الأنبوب أدناه فقط.
+        </div>
+        <?php endif; ?>
 
         <div class="section-title"><i class="fa-solid fa-ruler-combined text-primary"></i> مواصفات خط التوصيل</div>
-        <div class="spec-grid">
+        <div class="spec-grid cols-2">
             <div class="spec-box">
                 <i class="fa-solid fa-road"></i>
-                <div class="spec-label">طول الأنبوب</div>
+                <div class="spec-label">طول الوصلة</div>
                 <div class="spec-value"><?= htmlspecialchars($report['pipe_length']) ?> متر</div>
             </div>
             <div class="spec-box">
                 <i class="fa-solid fa-circle-notch"></i>
                 <div class="spec-label">قطر الأنبوب</div>
                 <div class="spec-value"><?= htmlspecialchars($report['pipe_diameter']) ?> بوصة</div>
-            </div>
-            <div class="spec-box">
-                <i class="fa-solid fa-plug-circle-check"></i>
-                <div class="spec-label">حالة التفعيل</div>
-                <div class="spec-value" style="color:#16a34a;">مفعّلة</div>
             </div>
         </div>
 

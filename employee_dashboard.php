@@ -3,6 +3,36 @@ error_reporting(E_ALL);
 ini_set('display_errors', 1);
 session_start();
 
+// التحقق من تسجيل الدخول للموظف
+if (!isset($_SESSION['emp_id'])) {
+    header("Location: employee_login.php");
+    exit;
+}
+
+require_once 'db_connect.php';
+$empId = $_SESSION['emp_id'];
+
+// =========================================================
+// الحوكمة الإدارية المطلقة: التحقق الفوري من حالة نشاط الموظف (Suspension Check)
+// إذا قام المدير بإيقاف الموظف، يتم تدمير جلسته فوراً وطرده خارج النظام بالكامل
+// =========================================================
+$checkEmpStatus = $pdo->prepare("SELECT is_active, emp_name FROM company_employee WHERE emp_id = ?");
+$checkEmpStatus->execute([$empId]);
+$empStatus = $checkEmpStatus->fetch(PDO::FETCH_ASSOC);
+
+if (!$empStatus || $empStatus['is_active'] == 0) {
+    session_unset();
+    session_destroy();
+    die("<div style='text-align:center; padding:50px; font-family:\"Cairo\", sans-serif; background:#fef2f2; border: 2px solid #ef4444; border-radius:15px; max-width:650px; margin:100px auto; box-shadow: 0 10px 30px rgba(0,0,0,0.05); text-align: right; direction: rtl;'>
+        <h2 style='color:#dc2626; font-weight:900; border-bottom: 2px solid #fca5a5; padding-bottom: 15px; margin-bottom: 20px;'><i class='fa-solid fa-user-slash' style='margin-left: 10px;'></i> تم إيقاف صلاحيات الحساب الإداري!</h2>
+        <p style='font-size:1.15rem; font-weight:bold; color:#1e293b; line-height: 1.8;'>عفواً، لقد قام مدير النظام بتعليق صلاحياتك الإدارية والتشغيلية على منصة قطرة فوراً لدواعي المراجعة والحوكمة الأمنية.</p>
+        <p style='font-size:1rem; color:#64748b; margin-top: 10px;'>يرجى مراجعة الإدارة المختصة لإعادة تفعيل الحساب في حال رغبتك في مزاولة المهام الميدانية مجدداً.</p>
+        <div style='text-align: left; margin-top: 30px;'>
+            <a href='employee_login.php' style='display:inline-block; padding:12px 30px; background:#092e54; color:white; text-decoration:none; border-radius:50px; font-weight:bold; font-size: 0.95rem; box-shadow: 0 4px 15px rgba(9,46,84,0.2);'>العودة لشاشة الدخول الرئيسية</a>
+        </div>
+    </div>");
+}
+
 // معالجة تسجيل الخروج
 if (isset($_GET['logout'])) {
     session_unset();
@@ -11,25 +41,15 @@ if (isset($_GET['logout'])) {
     exit;
 }
 
-// التحقق من تسجيل الدخول
-if (!isset($_SESSION['emp_id'])) {
-    header("Location: employee_login.php");
-    exit;
-}
-
 if (empty($_SESSION['emp_roles'])) {
-    die("<div style='text-align:center; padding:50px; font-family:tahoma;'><h2>حسابك لا يمتلك صلاحيات.</h2><a href='logout.php'>تسجيل الخروج</a></div>");
+    die("<div style='text-align:center; padding:50px; font-family:Cairo;'><h2>حسابك لا يمتلك صلاحيات للعمل.</h2><a href='logout.php'>تسجيل الخروج</a></div>");
 }
 
-// تصحيح استدعاء ملف الاتصال بقاعدة البيانات لمنع الـ Fatal Error نهائياً
-require_once 'db_connect.php'; 
-
-$empName = $_SESSION['emp_name'];
-$empId = $_SESSION['emp_id'];
+$empName = $empStatus['emp_name'];
 $roles = array_unique($_SESSION['emp_roles']);
 
 // =========================================================
-// نظام المزامنة والعدادات: حساب المهام الفعلية والنشطة لكل رول بدقة متناهية
+// نظام المزامنة والعدادات الذكية: حساب المهام الحية المعلقة لكل رول بدقة
 // =========================================================
 
 // 1. صلاحية مدير النظام: عدد المهام غير المسندة بانتظار التوزيع الجغرافي
@@ -137,7 +157,6 @@ body { font-family: 'Cairo', sans-serif; background-color: var(--bg-color); colo
 .user-profile-badge { background: white; padding: 6px 20px 6px 6px; border-radius: 50px; font-weight: 700; color: var(--nwc-navy); border: 1px solid #e2e8f0; display: flex; align-items: center; gap: 12px; box-shadow: 0 4px 10px rgba(0,0,0,0.02); }
 .user-avatar { width: 38px; height: 38px; background: var(--nwc-light); color: var(--nwc-blue); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 1.2rem; }
 .btn-logout { transition: all 0.3s; width: 42px; height: 42px; display: flex; align-items: center; justify-content: center; } .btn-logout:hover { background-color: #ef4444 !important; color: white !important; transform: rotate(90deg); }
-/* ===== بطاقات اختيار مساحة العمل ===== */
 .roles-section { padding-bottom: 60px; }
 .roles-grid { display: flex; flex-wrap: wrap; justify-content: center; gap: 22px; }
 .role-card { background: rgba(255, 255, 255, 0.97); backdrop-filter: blur(20px); border: 1px solid rgba(255,255,255,0.2); border-radius: 22px; padding: 42px 26px; width: 260px; text-align: center; text-decoration: none; transition: all 0.4s cubic-bezier(0.2, 0.8, 0.2, 1); box-shadow: 0 20px 45px rgba(0,0,0,0.18); position: relative; overflow: hidden; }
@@ -235,7 +254,7 @@ bgContainer.appendChild(drop);
 </div>
 
 <!-- ========================================================= -->
-<!-- مركز التنبيهات والإنذارات الموحد والذكي (قبل اختيار الرول) -->
+<!-- مركز التنبيهات والإنذارات الموحد في واجهة التوجيه (الأولية) -->
 <!-- ========================================================= -->
 <?php if (!empty($empNotifs)): ?>
 <div class="row mb-5 justify-content-center fade-in-up delay-2">
