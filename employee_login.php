@@ -24,7 +24,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
     $employee = null;
 
     try {
-        $stmt = $pdo->prepare("SELECT emp_id, emp_name, emp_email, password_hash, cty_id, active_tasks_count FROM company_employee WHERE emp_email = ?");
+        $stmt = $pdo->prepare("SELECT emp_id, emp_name, emp_email, password_hash, cty_id, active_tasks_count, is_active FROM company_employee WHERE emp_email = ?");
         $stmt->execute([$email]);
         $employee = $stmt->fetch(PDO::FETCH_ASSOC);
     } catch (PDOException $e) {
@@ -33,6 +33,13 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
 
     if ($employee) {
         if ($password === $employee['password_hash'] || password_verify($password, $employee['password_hash'])) {
+
+            // ===================== منع الموظف الموقوف من الدخول =====================
+            if ((int)$employee['is_active'] === 0) {
+                $errorMsg = "تم إيقاف حسابك من قبل الإدارة. يرجى التواصل مع مدير النظام.";
+            } else {
+            // ==========================================================================
+
             $rolesArray = [];
             try {
                 $roleStmt = $pdo->prepare("SELECT sr.role_name FROM employee_roles er JOIN system_role sr ON er.role_id = sr.role_id WHERE er.emp_id = ?");
@@ -67,6 +74,8 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
                 header("Location: employee_verify_otp.php");
                 exit;
             }
+
+            } // نهاية شرط is_active
         } else {
             $errorMsg = "كلمة المرور غير صحيحة.";
         }
