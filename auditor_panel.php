@@ -189,8 +189,28 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
                     $notifMsg = "عفواً، تم رفض طلبك رقم # " . str_pad($appId, 5, '0', STR_PAD_LEFT) . " بعد التدقيق والمراجعة اليدوية للسبب التالي: (" . $reason . "). يمكنك مراجعة المستندات وإعادة التقديم.";
                     $pdo->prepare("INSERT INTO notification (message_content, cust_id) VALUES (?, ?)")->execute([$notifMsg, $custId]);
                 }
+
+                // د. إشعار جميع مديري النظام (Admin) برفض الطلب مع ذكر سبب الرفض واسم المدقق المسؤول
+                $adminIds = $pdo->query("
+                    SELECT ce.emp_id FROM company_employee ce
+                    JOIN employee_roles er ON ce.emp_id = er.emp_id
+                    JOIN system_role sr ON er.role_id = sr.role_id
+                    WHERE sr.role_name = 'Admin' AND ce.is_active = 1
+                ")->fetchAll(PDO::FETCH_COLUMN);
+
+                if (!empty($adminIds)) {
+                    $auditorName = $_SESSION['emp_name'] ?? ('موظف #' . $empId);
+                    $adminNotifMsg = "تم رفض الطلب رقم #" . str_pad($appId, 5, '0', STR_PAD_LEFT) . " بواسطة المدقق (" . $auditorName . "). سبب الرفض: " . $reason;
+                    $stmtAdminNotif = $pdo->prepare("INSERT INTO employee_notification (emp_id, message_content, notif_type) VALUES (?, ?, 'rejection')");
+                    foreach ($adminIds as $adminId) {
+                        // لا نرسل للمدقق نفسه إشعاراً مكرراً إن كان هو أيضاً أدمن
+                        if ($adminId == $empId) continue;
+                        $stmtAdminNotif->execute([$adminId, $adminNotifMsg]);
+                    }
+                }
+
                 $pdo->commit();
-                $msg = "تم تسجيل رفض الطلب بنجاح وإرسال سبب الرفض للمستفيد."; $msgType = "success";
+                $msg = "تم تسجيل رفض الطلب بنجاح وإرسال سبب الرفض للمستفيد وتنبيه الإدارة."; $msgType = "success";
             } catch (Exception $e) {
                 $pdo->rollBack();
                 $msg = "فشلت العملية: " . $e->getMessage(); $msgType = "danger";

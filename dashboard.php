@@ -79,9 +79,17 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['submit_new_app'])) {
 // =========================================================
 $dbCustomerName = trim($customer['full_name']);
 $mojOwnerName = trim($mojRecord['owner_name']);
+$rejectionReason = null;
 
-if ($mojRecord['owner_national_id'] !== $nationalId || $dbCustomerName !== $mojOwnerName) {
-    // في حال اختلاف الهوية أو وجود أي اختلاف في الاسم (حتى لو حرف واحد)
+if ($mojRecord['owner_national_id'] !== $nationalId) {
+    // رقم الهوية الوطنية غير مطابق إطلاقاً لهوية مالك الصك في سجلات وزارة العدل.
+    // هذا مؤشر تزوير قوي (وليس مجرد فرق إملائي بالاسم)، لذلك يُرفض الطلب آلياً
+    // وفوراً دون تدخل بشري، ويُخطر المستفيد والإدارة بالسبب مباشرة عبر محرك (DSS).
+    $appStatus = 'Rejected';
+    $rejectionReason = "رقم الهوية الوطنية المدخل في حسابك لا يتطابق مع رقم هوية مالك الصك المسجل رسمياً لدى وزارة العدل لهذا الصك. إذا كنت تعتقد أن هذا خطأ، يرجى التواصل مع الدعم الفني.";
+    $notifMsg = "عفواً، تم رفض طلبك آلياً عبر محرك (DSS) للسبب التالي: " . $rejectionReason;
+} elseif ($dbCustomerName !== $mojOwnerName) {
+    // الهوية متطابقة، لكن يوجد اختلاف في الاسم (قد يكون خطأ إملائي بسيط) - يُحال لمراجعة بشرية
     $appStatus = 'Pending_Review';
     $notifMsg = "تم تقديم طلبك بنجاح، وتحويله للمدقق لمطابقة اختلاف بيانات المالك.";
 } else {
@@ -121,6 +129,7 @@ if ($mojRecord['owner_national_id'] !== $nationalId || $dbCustomerName !== $mojO
 
             $insertedCount = 0;
             $appsDetails = [];
+            $rejectedAppIdsForAdmin = [];
 
             foreach ($servicesToInsert as $singleSrvId) {
                 // التحقق من عدم وجود طلب مكرر نشط لنفس الخدمة على هذا الصك منعاً للسبام
@@ -140,7 +149,14 @@ if ($mojRecord['owner_national_id'] !== $nationalId || $dbCustomerName !== $mojO
                 $appDetailLine = "طلب {$srvNameClean} رقم (#" . str_pad($newAppId, 5, '0', STR_PAD_LEFT) . ")";
 
                 // إدراج أول سجل في تاريخ الطلب لدعم التتبع الحي لدورة الحياة
-                $pdo->prepare("INSERT INTO application_history (app_id, status, change_date) VALUES (?, ?, NOW())")->execute([$newAppId, $appStatus]);
+                // في حال الرفض الآلي (عدم تطابق الهوية) نسجل السبب مباشرة مع الحالة
+                if ($appStatus == 'Rejected') {
+                    $pdo->prepare("INSERT INTO application_history (app_id, status, rejection_reason, change_date) VALUES (?, ?, ?, NOW())")
+                        ->execute([$newAppId, $appStatus, $rejectionReason]);
+                    $rejectedAppIdsForAdmin[] = $newAppId;
+                } else {
+                    $pdo->prepare("INSERT INTO application_history (app_id, status, change_date) VALUES (?, ?, NOW())")->execute([$newAppId, $appStatus]);
+                }
 
                 // التوزيع الجغرافي الذكي لفنيي الفحص لكل طلب على حدة لتقليل العبء
                 if ($appStatus == 'Pending_Inspection') {
@@ -185,17 +201,55 @@ if ($mojRecord['owner_national_id'] !== $nationalId || $dbCustomerName !== $mojO
                 exit;
             }
 
-            // صياغة الإشعار والرد النهائي بناءً على عدد الطلبات التي تم إنشاؤها
+            // صياغة الإشعار والرد النهائي بناءً على عدد الطلبات التي تم إنشاؤها وحالتها
             if ($srvId == 3) {
-                $finalNotifMsg = "تم إنشاء طلبين منفصلين لعقارك بنجاح لتسريع الإنجاز والتركيب الميداني: " . implode(" و ", $appsDetails) . ". " . ($appStatus == 'Pending_Inspection' ? "تم توجيههما مباشرة للفحص الميداني الموزع." : "بانتظار المراجعة التدقيقية.");
+                if ($appStatus == 'Pending_Inspection') {
+                    $trailText = "تم توجيههما مباشرة للفحص الميداني الموزع.";
+                } elseif ($appStatus == 'Rejected') {
+                    $trailText = "تم رفضهما آلياً عبر محرك (DSS) للسبب الموضح: " . $rejectionReason;
+                } else {
+                    $trailText = "بانتظار المراجعة التدقيقية.";
+                }
+                $finalNotifMsg = "تم تسجيل طلبين منفصلين لعقارك: " . implode(" و ", $appsDetails) . ". " . $trailText;
             } else {
-                $finalNotifMsg = $notifMsg . " تم إنشاء " . $appsDetails[0];
+                $finalNotifMsg = $notifMsg . " تم تسجيل " . $appsDetails[0] . ".";
             }
 
             // إرسال الإشعار للمستفيد
             $pdo->prepare("INSERT INTO notification (message_content, cust_id) VALUES (?, ?)")->execute([$finalNotifMsg, $custId]);
 
-            echo json_encode(['status' => 'success', 'message' => $finalNotifMsg]);
+            // =========================================================
+            // إشعار جميع مديري النظام (Admin) فوراً في حال الرفض الآلي (DSS)
+            // بسبب عدم تطابق الهوية الوطنية، مع ذكر السبب الكامل
+            // =========================================================
+            if ($appStatus == 'Rejected' && !empty($rejectedAppIdsForAdmin)) {
+                try {
+                    $adminIds = $pdo->query("
+                        SELECT ce.emp_id FROM company_employee ce
+                        JOIN employee_roles er ON ce.emp_id = er.emp_id
+                        JOIN system_role sr ON er.role_id = sr.role_id
+                        WHERE sr.role_name = 'Admin' AND ce.is_active = 1
+                    ")->fetchAll(PDO::FETCH_COLUMN);
+
+                    if (!empty($adminIds)) {
+                        $rejectedIdsStr = implode('، ', array_map(function($id) {
+                            return '#' . str_pad($id, 5, '0', STR_PAD_LEFT);
+                        }, $rejectedAppIdsForAdmin));
+                        $adminNotifMsg = "رفض آلي (DSS): تم رفض الطلب(ات) " . $rejectedIdsStr . " فوراً للعميل (" . $customer['full_name'] . ") بسبب عدم تطابق الهوية الوطنية مع سجلات وزارة العدل. السبب: " . $rejectionReason;
+                        $stmtAdminNotif = $pdo->prepare("INSERT INTO employee_notification (emp_id, message_content, notif_type) VALUES (?, ?, 'rejection')");
+                        foreach ($adminIds as $adminId) {
+                            $stmtAdminNotif->execute([$adminId, $adminNotifMsg]);
+                        }
+                    }
+                } catch (Exception $e) {
+                    // صامتة: لا نوقف استجابة العميل بسبب فشل إشعار الأدمن
+                }
+            }
+
+            echo json_encode([
+                'status' => ($appStatus == 'Rejected' ? 'rejected' : 'success'),
+                'message' => $finalNotifMsg
+            ]);
             exit;
         } else {
             echo json_encode(['status' => 'error', 'message' => 'فشل في رفع ملف الصك.']);
@@ -334,7 +388,10 @@ try {
 
     $appStmt = $pdo->prepare("
         SELECT a.app_id, s.srv_name, a.deed_no, a.app_status, a.created_at, c.cty_name,
-               i.amount, i.payment_status
+               i.amount, i.payment_status,
+               (SELECT ah.rejection_reason FROM application_history ah 
+                WHERE ah.app_id = a.app_id AND ah.status = 'Rejected' 
+                ORDER BY ah.change_date DESC LIMIT 1) AS rejection_reason
         FROM application a
         JOIN city c ON a.cty_id = c.cty_id
         JOIN service_type s ON a.srv_id = s.srv_id
@@ -534,6 +591,8 @@ function getAppStageIndex($status) {
         .badge-success { background: #ecfdf5; color: #059669; border: 1px solid #a7f3d0; }
         .badge-dark { background: #f8fafc; color: #334155; border: 1px solid #e2e8f0; }
         .badge-danger { background: #fef2f2; color: #dc2626; border: 1px solid #fecaca; }
+
+        .rejection-reason-inline { font-size: 0.78rem; font-weight: 700; color: #dc2626; margin-top: 6px; max-width: 240px; display: flex; align-items: flex-start; gap: 5px; background: #fef2f2; border: 1px solid #fecaca; border-radius: 10px; padding: 6px 10px; }
 
         .property-box { background: white; border: 1px solid #e2e8f0; border-radius: 20px; padding: 25px; transition: 0.3s; margin-bottom: 20px; border-right: 5px solid var(--nwc-blue); }
         .property-box:hover { transform: translateY(-4px); box-shadow: 0 10px 25px rgba(0,0,0,0.05); }
@@ -745,9 +804,15 @@ function getAppStageIndex($status) {
                                         <td class="font-monospace text-muted"><?= htmlspecialchars($app['deed_no']); ?></td>
                                         <td>
                                             <span class="status-cell"><?= getStatusBadge($app['app_status']); ?></span>
+                                            <?php if ($app['app_status'] == 'Rejected' && !empty($app['rejection_reason'])): ?>
+                                                <div class="rejection-reason-inline" data-rejection-reason>
+                                                    <i class="fa-solid fa-circle-info mt-1"></i>
+                                                    <span><?= htmlspecialchars($app['rejection_reason']); ?></span>
+                                                </div>
+                                            <?php endif; ?>
                                             <button type="button" class="btn btn-sm btn-outline-primary rounded-circle mt-1 stage-btn" title="عرض مراحل الطلب"
                                                 data-app-id="<?= (int)$app['app_id']; ?>" data-service="<?= htmlspecialchars(cleanServiceName($app['srv_name']), ENT_QUOTES); ?>"
-                                                onclick="openStagesModal(<?= (int)$app['app_id']; ?>, <?= getAppStageIndex($app['app_status']); ?>, '<?= htmlspecialchars(cleanServiceName($app['srv_name']), ENT_QUOTES); ?>')">
+                                                onclick="openStagesModal(<?= (int)$app['app_id']; ?>, <?= getAppStageIndex($app['app_status']); ?>, '<?= htmlspecialchars(cleanServiceName($app['srv_name']), ENT_QUOTES); ?>', '<?= htmlspecialchars(addslashes($app['rejection_reason'] ?? ''), ENT_QUOTES); ?>')">
                                                 <i class="fa-solid fa-timeline"></i>
                                             </button>
                                         </td>
@@ -1172,6 +1237,10 @@ function getAppStageIndex($status) {
                 if (data.status === 'error') {
                     Swal.fire({ icon: 'error', title: 'فشل التحقق', text: data.message, confirmButtonColor: '#092e54' })
                     .then(() => { submitBtn.disabled = false; });
+                } else if (data.status === 'rejected') {
+                    // رفض آلي فوري (DSS) - نعرض السبب بوضوح للعميل ثم نحدّث الصفحة ليظهر الطلب بحالته المرفوضة
+                    Swal.fire({ icon: 'error', title: 'تم رفض الطلب آلياً', text: data.message, confirmButtonColor: '#092e54' })
+                    .then(() => { window.location.reload(); });
                 } else {
                     Swal.fire({ icon: 'success', title: 'تم استلام طلبك', text: data.message, confirmButtonColor: '#10b981' })
                     .then(() => { window.location.reload(); });
@@ -1223,7 +1292,7 @@ function getAppStageIndex($status) {
             'Rejected':           { text: 'تم رفض هذا الطلب، يمكنك مراجعة السبب من سجل الطلبات', icon: 'fa-circle-xmark' }
         };
 
-        function openStagesModal(appId, stageIndex, serviceName) {
+        function openStagesModal(appId, stageIndex, serviceName, rejectionReason) {
             document.getElementById('stg-app-id').textContent = '#' + String(appId).padStart(5, '0');
             document.getElementById('stg-service').textContent = serviceName;
 
@@ -1233,6 +1302,11 @@ function getAppStageIndex($status) {
 
             if (stageIndex === -1) {
                 rejectedMsg.classList.remove('d-none');
+                if (rejectionReason && rejectionReason.trim() !== '') {
+                    rejectedMsg.innerHTML = `<i class="fa-solid fa-circle-xmark"></i> تم رفض هذا الطلب للسبب التالي:<br><span class="d-block mt-2">${rejectionReason}</span>`;
+                } else {
+                    rejectedMsg.innerHTML = `<i class="fa-solid fa-circle-xmark"></i> تم رفض هذا الطلب ولن يكمل بقية المراحل.`;
+                }
             } else {
                 rejectedMsg.classList.add('d-none');
             }
@@ -1335,6 +1409,12 @@ function getAppStageIndex($status) {
             });
         }
 
+        // دالة مساعدة لتحصين النصوص من كسر الجافاسكريبت عند حقنها داخل onclick بصيغة نصية
+        function escJsAttr(str) {
+            if (str === null || str === undefined) return '';
+            return String(str).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;').replace(/\r?\n/g, ' ');
+        }
+
         // =========================================================================
         // ============== نظام الإشعارات والتتبع الحي (Live Order-Style Tracking) ==============
         // نفس فكرة تطبيقات توصيل الطلبات: تحديث تلقائي دوري لحالة الطلب + إشعار فوري
@@ -1418,12 +1498,13 @@ function getAppStageIndex($status) {
 
         function showLiveToast(app, prevStatus) {
             let msg = liveStageMessages[app.app_status] || { text: 'تحديث جديد على طلبك', icon: 'fa-bell' };
+            let extraText = (app.app_status === 'Rejected' && app.rejection_reason) ? (' — ' + app.rejection_reason) : '';
             Swal.fire({
                 toast: true,
                 position: 'top-start',
                 icon: app.app_status === 'Rejected' ? 'error' : (app.app_status === 'Completed' ? 'success' : 'info'),
                 title: 'طلب #' + String(app.app_id).padStart(5, '0') + ' (' + app.srv_name_clean + ')',
-                html: `<i class="fa-solid ${msg.icon}"></i> ${msg.text}`,
+                html: `<i class="fa-solid ${msg.icon}"></i> ${msg.text}${extraText}`,
                 showConfirmButton: false,
                 timer: 6000,
                 timerProgressBar: true
@@ -1444,9 +1525,25 @@ function getAppStageIndex($status) {
                         statusCell.querySelector('.status-badge')?.classList.add('just-updated');
                     }
                 }
+
+                // إظهار/تحديث سبب الرفض أسفل الحالة مباشرة دون تحديث الصفحة
+                let existingReasonBox = row.querySelector('[data-rejection-reason]');
+                if (app.app_status === 'Rejected' && app.rejection_reason) {
+                    if (!existingReasonBox && statusCell) {
+                        let reasonDiv = document.createElement('div');
+                        reasonDiv.className = 'rejection-reason-inline';
+                        reasonDiv.setAttribute('data-rejection-reason', '');
+                        reasonDiv.innerHTML = `<i class="fa-solid fa-circle-info mt-1"></i><span>${app.rejection_reason}</span>`;
+                        statusCell.appendChild(reasonDiv);
+                    } else if (existingReasonBox) {
+                        existingReasonBox.querySelector('span').textContent = app.rejection_reason;
+                    }
+                }
+
                 let stageBtn = row.querySelector('.stage-btn');
                 if (stageBtn) {
-                    stageBtn.setAttribute('onclick', `openStagesModal(${app.app_id}, ${stageIndexOf(app.app_status)}, '${app.srv_name_clean}')`);
+                    let safeReason = escJsAttr(app.rejection_reason || '');
+                    stageBtn.setAttribute('onclick', `openStagesModal(${app.app_id}, ${stageIndexOf(app.app_status)}, '${app.srv_name_clean}', '${safeReason}')`);
                 }
                 let payCell = row.querySelector('.payment-cell');
                 if (payCell && app.payment_status === 'Unpaid' && app.amount) {

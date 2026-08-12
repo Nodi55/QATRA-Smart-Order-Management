@@ -56,6 +56,26 @@ try {
 
 define('OVERLOAD_THRESHOLD', 8);
 
+$empId = $_SESSION['emp_id'];
+
+// معالجة قراءة إشعار الأدمن (مثل إشعارات الرفض الواردة من المدقق)
+if (isset($_GET['read_notif'])) {
+    $notifId = intval($_GET['read_notif']);
+    $pdo->prepare("UPDATE employee_notification SET is_read = 1 WHERE notif_id = ? AND emp_id = ?")->execute([$notifId, $empId]);
+    header("Location: admin_dashboard.php");
+    exit;
+}
+
+// جلب إشعارات الأدمن غير المقروءة (تشمل إشعارات رفض الطلبات من المدققين)
+$adminNotifs = [];
+try {
+    $adminNotifStmt = $pdo->prepare("SELECT * FROM employee_notification WHERE emp_id = ? AND is_read = 0 ORDER BY created_at DESC");
+    $adminNotifStmt->execute([$empId]);
+    $adminNotifs = $adminNotifStmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (Exception $e) {
+    // صامتة
+}
+
 // =========================================================
 // معالجة العمليات والربط البرمجي لجدول الإشعارات
 // =========================================================
@@ -537,6 +557,8 @@ body { font-family: 'Cairo', sans-serif; background-color: var(--bg); margin: 0;
 .bar-label { width: 150px; flex-shrink: 0; font-weight: 800; color: #334155; font-size: 0.9rem; }
 .bar-track { flex: 1; background: #f1f5f9; border-radius: 8px; height: 22px; overflow: hidden; position: relative; }
 .bar-fill { height: 100%; border-radius: 8px; display: flex; align-items: center; justify-content: flex-end; padding: 0 10px; color: white; font-weight: 800; font-size: 0.8rem; transition: width 0.6s ease; white-space: nowrap; }
+.notif-bell-wrap { position: relative; }
+.notif-bell-badge { position: absolute; top: -6px; left: -6px; background: #ef4444; color: white; font-size: 0.68rem; font-weight: 800; min-width: 20px; height: 20px; border-radius: 50%; display: flex; align-items: center; justify-content: center; padding: 0 4px; box-shadow: 0 0 0 3px white; }
 </style>
 </head>
 <body>
@@ -564,6 +586,12 @@ body { font-family: 'Cairo', sans-serif; background-color: var(--bg); margin: 0;
 <div class="topbar">
 <div><h4 class="fw-black text-dark m-0" id="topbar-title">نظرة عامة والإحصائيات</h4></div>
 <div class="d-flex align-items-center gap-3">
+<div class="notif-bell-wrap">
+<button class="btn btn-light rounded-circle shadow-sm border" id="adminBellBtn" style="width:42px;height:42px;" onclick="openPage('page-alerts', document.querySelector('[onclick*=page-alerts]'))" title="الإشعارات">
+<i class="fa-solid fa-bell text-secondary"></i>
+</button>
+<?php if(count($adminNotifs) > 0): ?><span class="notif-bell-badge"><?= count($adminNotifs) > 9 ? '9+' : count($adminNotifs); ?></span><?php endif; ?>
+</div>
 <span class="fw-bold text-secondary">مرحباً، م. <?= htmlspecialchars($_SESSION['emp_name']); ?></span>
 <div class="bg-primary text-white rounded-circle d-flex justify-content-center align-items-center" style="width: 40px; height: 40px;"><i class="fa-solid fa-user-shield"></i></div>
 </div>
@@ -575,6 +603,37 @@ document.addEventListener('DOMContentLoaded', function() {
 Swal.fire({ icon: '<?= $msgType ?>', title: 'إشعار النظام', text: '<?= addslashes($msg) ?>', confirmButtonColor: '#0b457f' });
 });
 </script>
+<?php endif; ?>
+
+<?php if (!empty($adminNotifs)): ?>
+<div class="row mb-4">
+<div class="col-12">
+<div class="card border-0 shadow-sm rounded-4" style="background: linear-gradient(135deg, #fef2f2 0%, #fff7ed 100%); border-right: 6px solid #dc2626 !important;">
+<div class="card-body p-4">
+<div class="d-flex justify-content-between align-items-center mb-3">
+<h5 class="fw-black text-danger m-0"><i class="fa-solid fa-bell me-2"></i> إشعارات إدارية جديدة (رفض طلبات وغيرها)</h5>
+<span class="badge bg-danger px-3 py-2 fw-bold"><?= count($adminNotifs); ?> إشعار جديد</span>
+</div>
+<div>
+<?php foreach ($adminNotifs as $notif): ?>
+<div class="p-3 bg-white rounded-3 border d-flex justify-content-between align-items-center mb-2">
+<div class="d-flex align-items-center gap-3">
+<div class="rounded-circle bg-light d-flex align-items-center justify-content-center" style="width: 45px; height: 45px;">
+<i class="fa-solid fa-circle-xmark text-danger fs-5"></i>
+</div>
+<div>
+<p class="m-0 fw-bold text-dark" style="font-size: 0.95rem;"><?= htmlspecialchars($notif['message_content']); ?></p>
+<small class="text-muted small"><i class="fa-regular fa-clock me-1"></i> <?= $notif['created_at']; ?></small>
+</div>
+</div>
+<a href="?read_notif=<?= $notif['notif_id']; ?>" class="btn btn-sm btn-outline-secondary rounded-pill fw-bold"><i class="fa-solid fa-check me-1"></i> تحديد كمقروء</a>
+</div>
+<?php endforeach; ?>
+</div>
+</div>
+</div>
+</div>
+</div>
 <?php endif; ?>
 
 <div id="page-stats" class="page-view active">
@@ -824,7 +883,14 @@ if(strpos($tech['role_name'], $reqRole) !== false): ?>
 <td class="fw-bold text-muted">#<?= str_pad($app['app_id'], 5, '0', STR_PAD_LEFT); ?><br><span class="small"><?= $app['change_date']; ?></span></td>
 <td class="fw-bold text-dark"><?= htmlspecialchars($app['customer_name'] ?? '-'); ?></td>
 <td><?= $app['auditor_name'] ? "<span class='badge bg-secondary'>المدقق: ".htmlspecialchars($app['auditor_name'])."</span>" : "<span class='badge bg-dark'>رفض آلي (DSS)</span>" ?></td>
-<td><button class="btn btn-sm btn-outline-primary fw-bold rounded-pill" onclick="showReason('<?= htmlspecialchars($app['deed_no']) ?>', '<?= htmlspecialchars($app['rejection_reason']) ?>')"><i class="fa-solid fa-folder-open me-1"></i> عرض السبب</button></td>
+<td>
+<button type="button"
+    class="btn btn-sm btn-outline-primary fw-bold rounded-pill show-reason-btn"
+    data-deed="<?= htmlspecialchars($app['deed_no'] ?? '', ENT_QUOTES, 'UTF-8'); ?>"
+    data-reason="<?= htmlspecialchars($app['rejection_reason'] ?? 'لا يوجد سبب مسجل.', ENT_QUOTES, 'UTF-8'); ?>">
+    <i class="fa-solid fa-folder-open me-1"></i> عرض السبب
+</button>
+</td>
 </tr>
 <?php endforeach; ?>
 </tbody>
@@ -966,20 +1032,31 @@ function openPage(pageId, element) {
 document.querySelectorAll('.page-view').forEach(p => p.classList.remove('active'));
 document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
 document.getElementById(pageId).classList.add('active');
-element.classList.add('active');
-document.getElementById('topbar-title').innerText = element.innerText;
+if (element) {
+    element.classList.add('active');
+    document.getElementById('topbar-title').innerText = element.innerText.trim();
 }
+}
+
+// عرض سبب الرفض داخل نافذة منبثقة - عبر قراءة data-* بدل حقن النص مباشرة في onclick
+// هذا يمنع انكسار الجافاسكريبت إذا كان سبب الرفض يحتوي على علامة اقتباس (') أو سطر جديد
 function showReason(deedNo, reason) {
 Swal.fire({
 title: 'تفاصيل الرفض',
 html: `<div style="text-align: right; background: #f8fafc; padding: 20px; border-radius: 12px;">
-<p class="mb-3"><strong>رقم الصك:</strong> <span dir="ltr">${deedNo}</span></p>
-<p class="text-danger fw-bold m-0">${reason}</p>
+<p class="mb-3"><strong>رقم الصك:</strong> <span dir="ltr">${deedNo || '-'}</span></p>
+<p class="text-danger fw-bold m-0" style="white-space: pre-wrap;">${reason || 'لا يوجد سبب مسجل.'}</p>
 </div>`,
 confirmButtonColor: '#0b457f',
 confirmButtonText: 'إغلاق'
 });
 }
+
+document.querySelectorAll('.show-reason-btn').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+        showReason(this.dataset.deed, this.dataset.reason);
+    });
+});
 </script>
 </body>
 </html>
