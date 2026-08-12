@@ -1,7 +1,0 @@
-﻿{
-	"name": "qatra/smart-system",
-	"description": "Smart Order Management System",
-	"require": {
-		"php": ">=8.0"
-	}
-}
