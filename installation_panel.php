@@ -28,6 +28,11 @@ function getMeterSerialPrefix($srvName) {
     return 'W'; // الافتراضي لخدمات شبكة المياه وأي خدمة أخرى غير الصرف الصحي
 }
 
+// تحديد ما إذا كانت الخدمة صرف صحي (لا يوجد عداد لها إطلاقاً)
+function isSewageService($srvName) {
+    return strpos($srvName ?: '', 'صرف') !== false;
+}
+
 // تهيئة ذكية: تأكيد وجود جدول الإشعارات والتحذيرات للموظفين
 try {
     $pdo->query("SELECT 1 FROM employee_notification LIMIT 1");
@@ -73,18 +78,36 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['complete_task'])) {
     $appId = $_POST['app_id'];
     $pipeLength = floatval($_POST['pipe_length']);
     $pipeDiameter = floatval($_POST['pipe_diameter']);
-    $initialReading = floatval($_POST['initial_reading']);
-    $mtrSerialInput = trim($_POST['mtr_serial']);
-    $mtrType = $_POST['mtr_type'];
 
     // الملاحظات حقل اختياري بالكامل
     $installerNotes = isset($_POST['installer_notes']) ? trim($_POST['installer_notes']) : '';
     $installerNotes = $installerNotes !== '' ? $installerNotes : null;
 
-    if (empty($mtrSerialInput)) {
+    // جلب نوع الخدمة الخاص بالطلب أولاً لتحديد هل هي صرف صحي (بدون عداد) أو شبكة مياه (بعداد)
+    $stmtSrv = $pdo->prepare("
+        SELECT st.srv_name FROM application a 
+        JOIN service_type st ON a.srv_id = st.srv_id 
+        WHERE a.app_id = ?
+    ");
+    $stmtSrv->execute([$appId]);
+    $srvName = $stmtSrv->fetchColumn();
+    $isSewage = isSewageService($srvName);
+
+    // حقول العداد (رقم تسلسلي / نوع / قراءة افتتاحية) تُطلب فقط لخدمات شبكة المياه
+    if (!$isSewage) {
+        $initialReading = floatval($_POST['initial_reading']);
+        $mtrSerialInput = trim($_POST['mtr_serial']);
+        $mtrType = $_POST['mtr_type'];
+    } else {
+        $initialReading = null;
+        $mtrSerialInput = '';
+        $mtrType = null;
+    }
+
+    if (!$isSewage && empty($mtrSerialInput)) {
         $msg = "خطأ: يجب إدخال الرقم التسلسلي للعداد.";
         $msgType = "error";
-    } elseif ($initialReading < 0) {
+    } elseif (!$isSewage && $initialReading < 0) {
         // القراءة الافتتاحية للعداد لا يجوز أن تكون قيمة سالبة
         $msg = "خطأ: لا يمكن أن تكون القراءة الافتتاحية للعداد قيمة سالبة.";
         $msgType = "error";
@@ -95,20 +118,14 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['complete_task'])) {
         try {
             $pdo->beginTransaction();
 
-            // جلب نوع الخدمة الخاص بالطلب لتحديد بادئة الرقم التسلسلي الصحيحة (W لشبكة المياه / S للصرف الصحي)
-            $stmtSrv = $pdo->prepare("
-                SELECT st.srv_name FROM application a 
-                JOIN service_type st ON a.srv_id = st.srv_id 
-                WHERE a.app_id = ?
-            ");
-            $stmtSrv->execute([$appId]);
-            $srvName = $stmtSrv->fetchColumn();
-            $expectedPrefix = getMeterSerialPrefix($srvName ?: '');
-
-            // تطبيع الرقم التسلسلي: إزالة أي بادئة W- أو S- مدخلة يدوياً، ثم فرض البادئة الصحيحة دائماً من السيرفر
-            $cleanSerial = preg_replace('/^(W|S)-?/i', '', $mtrSerialInput);
-            $cleanSerial = trim($cleanSerial, "- \t\n\r\0\x0B");
-            $mtrSerial = $expectedPrefix . '-' . $cleanSerial;
+            $mtrSerial = null;
+            if (!$isSewage) {
+                $expectedPrefix = getMeterSerialPrefix($srvName ?: '');
+                // تطبيع الرقم التسلسلي: إزالة أي بادئة W- أو S- مدخلة يدوياً، ثم فرض البادئة الصحيحة دائماً من السيرفر
+                $cleanSerial = preg_replace('/^(W|S)-?/i', '', $mtrSerialInput);
+                $cleanSerial = trim($cleanSerial, "- \t\n\r\0\x0B");
+                $mtrSerial = $expectedPrefix . '-' . $cleanSerial;
+            }
 
             // 1. تحديث جدول تفاصيل مهمة التركيب
             $stmtUpdateTask = $pdo->prepare("
@@ -139,20 +156,22 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['complete_task'])) {
                 }
             }
 
-            // 3. تسجيل بيانات العداد وربطه بالمهمة والحساب الموحد
-            $stmtCheckMeter = $pdo->prepare("SELECT COUNT(*) FROM meter WHERE mtr_serial = ?");
-            $stmtCheckMeter->execute([$mtrSerial]);
-            if ($stmtCheckMeter->fetchColumn() > 0) {
-                throw new Exception("الرقم التسلسلي للعداد مستخدم مسبقاً في النظام.");
+            // 3. تسجيل بيانات العداد وربطه بالمهمة والحساب الموحد (فقط لخدمات شبكة المياه، الصرف الصحي بدون عداد)
+            if (!$isSewage) {
+                $stmtCheckMeter = $pdo->prepare("SELECT COUNT(*) FROM meter WHERE mtr_serial = ?");
+                $stmtCheckMeter->execute([$mtrSerial]);
+                if ($stmtCheckMeter->fetchColumn() > 0) {
+                    throw new Exception("الرقم التسلسلي للعداد مستخدم مسبقاً في النظام.");
+                }
+
+                $stmtInsertMeter = $pdo->prepare("
+                    INSERT INTO meter (mtr_serial, mtr_type, acc_id, task_id) 
+                    VALUES (?, ?, ?, ?)
+                ");
+                $stmtInsertMeter->execute([$mtrSerial, $mtrType, $accId, $taskId]);
             }
 
-            $stmtInsertMeter = $pdo->prepare("
-                INSERT INTO meter (mtr_serial, mtr_type, acc_id, task_id) 
-                VALUES (?, ?, ?, ?)
-            ");
-            $stmtInsertMeter->execute([$mtrSerial, $mtrType, $accId, $taskId]);
-
-            // 4. تفعيل الخدمة للعميل (Activated Service)
+            // 4. تفعيل الخدمة للعميل (Activated Service) - تنطبق على الخدمتين
             $stmtAppSrv = $pdo->prepare("SELECT srv_id FROM application WHERE app_id = ?");
             $stmtAppSrv->execute([$appId]);
             $srvId = $stmtAppSrv->fetchColumn();
@@ -182,7 +201,9 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['complete_task'])) {
             $stmtDecWorkload->execute([$empId]);
 
             $pdo->commit();
-            $msg = "تم تركيب العداد بنجاح، وتفعيل حساب المشترك، وإغلاق الطلب نهائياً!";
+            $msg = $isSewage
+                ? "تم تسجيل تركيب خط الصرف الصحي بنجاح، وتفعيل حساب المشترك، وإغلاق الطلب نهائياً!"
+                : "تم تركيب العداد بنجاح، وتفعيل حساب المشترك، وإغلاق الطلب نهائياً!";
             $msgType = "success";
         } catch (Exception $e) {
             $pdo->rollBack();
@@ -194,6 +215,8 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['complete_task'])) {
 
 // =========================================================
 // جلب البيانات لشاشة العرض
+// معيار "اكتمال" المهمة أصبح مبنياً على pipe_length بدل initial_reading
+// لأن الصرف الصحي بدون عداد/قراءة، لكنه دائماً يحتاج طول وقطر الأنبوب
 // =========================================================
 
 // 1. قائمة المهام النشطة للفني الحالي (بانتظار التركيب)
@@ -205,7 +228,7 @@ $stmtActiveTasks = $pdo->prepare("
     JOIN customer c ON a.cust_id = c.cust_id
     JOIN city cy ON a.cty_id = cy.cty_id
     JOIN service_type st ON a.srv_id = st.srv_id
-    WHERE it.emp_id = ? AND it.initial_reading IS NULL
+    WHERE it.emp_id = ? AND it.pipe_length IS NULL
 ");
 $stmtActiveTasks->execute([$empId]);
 $activeTasks = $stmtActiveTasks->fetchAll(PDO::FETCH_ASSOC);
@@ -220,7 +243,7 @@ $stmtCompletedTasks = $pdo->prepare("
     JOIN city cy ON a.cty_id = cy.cty_id
     JOIN service_type st ON a.srv_id = st.srv_id
     LEFT JOIN meter m ON it.task_id = m.task_id
-    WHERE it.emp_id = ? AND it.initial_reading IS NOT NULL
+    WHERE it.emp_id = ? AND it.pipe_length IS NOT NULL
     ORDER BY it.task_id DESC
 ");
 $stmtCompletedTasks->execute([$empId]);
@@ -269,6 +292,8 @@ $completedTasks = $stmtCompletedTasks->fetchAll(PDO::FETCH_ASSOC);
         .form-label { font-weight: 700; color: var(--navy); }
 
         .serial-prefix-addon { font-weight: 900; min-width: 52px; justify-content: center; background: #eef2f6; color: var(--navy); }
+
+        .sewage-note { background: #eef2f6; border: 1px dashed #cbd5e1; border-radius: 12px; padding: 14px 18px; color: #475569; font-weight: 700; font-size: 0.9rem; }
         
         .page-view { display: none; animation: fadeIn 0.4s; }
         .page-view.active { display: block; }
@@ -385,14 +410,14 @@ $completedTasks = $stmtCompletedTasks->fetchAll(PDO::FETCH_ASSOC);
                                     <a id="btnGoogleMap" href="#" target="_blank" class="btn btn-outline-danger w-100 fw-bold rounded-pill"><i class="fa-solid fa-map-location-dot me-2"></i> فتح اتجاهات الملاحة في خرائط جوجل</a>
                                 </div>
 
-                                <div class="card-title text-success"><i class="fa-solid fa-file-invoice"></i> إدخال البيانات الفنية للعداد والتركيب</div>
+                                <div class="card-title text-success"><i class="fa-solid fa-file-invoice"></i> إدخال البيانات الفنية للتركيب</div>
                                 <form method="POST" id="installForm" onsubmit="return prepareSubmit(event)">
                                     <input type="hidden" name="task_id" id="form_task_id" value="<?= $activeTasks[0]['task_id'] ?>">
                                     <input type="hidden" name="app_id" id="form_app_id" value="<?= $activeTasks[0]['app_id'] ?>">
                                     
                                     <div class="row g-3">
                                         <div class="col-md-6">
-                                            <label class="form-label">طول الأنبوب المستخدم (متر)</label>
+                                            <label class="form-label" id="pipeLengthLabel">طول الأنبوب المستخدم (متر)</label>
                                             <input type="number" step="0.1" min="0" name="pipe_length" class="form-control" placeholder="مثال: 12.5" required>
                                         </div>
                                         <div class="col-md-6">
@@ -405,27 +430,40 @@ $completedTasks = $stmtCompletedTasks->fetchAll(PDO::FETCH_ASSOC);
                                                 <option value="2.0">2.0 بوصة (تجاري/صناعي)</option>
                                             </select>
                                         </div>
-                                        <div class="col-md-6">
-                                            <label class="form-label">الرقم التسلسلي للعداد الجديد (Serial)</label>
-                                            <div class="input-group">
-                                                <span class="input-group-text serial-prefix-addon" id="serialPrefixAddon">W-</span>
-                                                <input type="text" id="mtr_serial_suffix" class="form-control" placeholder="أدخل الجزء المتبقي من الرقم" required>
+
+                                        <!-- حقول العداد: تظهر فقط لخدمات شبكة المياه، وتُخفى بالكامل للصرف الصحي -->
+                                        <div class="col-12" id="meterFieldsSection">
+                                            <div class="row g-3">
+                                                <div class="col-md-6">
+                                                    <label class="form-label">الرقم التسلسلي للعداد الجديد (Serial)</label>
+                                                    <div class="input-group">
+                                                        <span class="input-group-text serial-prefix-addon" id="serialPrefixAddon">W-</span>
+                                                        <input type="text" id="mtr_serial_suffix" class="form-control" placeholder="أدخل الجزء المتبقي من الرقم">
+                                                    </div>
+                                                    <input type="hidden" name="mtr_serial" id="mtr_serial_hidden">
+                                                    <small class="text-muted"></small>
+                                                </div>
+                                                <div class="col-md-6">
+                                                    <label class="form-label">نوع العداد المخصص</label>
+                                                    <select name="mtr_type" id="mtr_type_select" class="form-select">
+                                                        <option value="Smart">عداد مياه ذكي إلكتروني (Smart)</option>
+                                                        <option value="Mechanical">عداد مياه ميكانيكي (Mechanical)</option>
+                                                    </select>
+                                                </div>
+                                                <div class="col-md-12">
+                                                    <label class="form-label">القراءة الافتتاحية المبدئية للعداد (م³)</label>
+                                                    <input type="number" step="0.01" min="0" name="initial_reading" id="initial_reading_input" class="form-control" value="0.00">
+                                                    <small class="text-muted">لا يُسمح بإدخال قيمة سالبة</small>
+                                                </div>
                                             </div>
-                                            <input type="hidden" name="mtr_serial" id="mtr_serial_hidden">
-                                            <small class="text-muted">تُضاف البادئة تلقائياً حسب نوع الخدمة: W لشبكة المياه، S للصرف الصحي</small>
                                         </div>
-                                        <div class="col-md-6">
-                                            <label class="form-label">نوع العداد المخصص</label>
-                                            <select name="mtr_type" class="form-select" required>
-                                                <option value="Smart">عداد مياه ذكي إلكتروني (Smart)</option>
-                                                <option value="Mechanical">عداد مياه ميكانيكي (Mechanical)</option>
-                                            </select>
+
+                                        <!-- ملاحظة تظهر بدل حقول العداد عند اختيار مهمة صرف صحي -->
+                                        <div class="col-12 sewage-note d-none" id="sewageNote">
+                                            <i class="fa-solid fa-circle-info me-1"></i>
+                                            خدمة صرف صحي — لا يوجد عداد لهذا النوع من التركيب، يكفي إدخال طول وقطر الأنبوب.
                                         </div>
-                                        <div class="col-md-12">
-                                            <label class="form-label">القراءة الافتتاحية المبدئية للعداد (م³)</label>
-                                            <input type="number" step="0.01" min="0" name="initial_reading" class="form-control" value="0.00" required>
-                                            <small class="text-muted">لا يُسمح بإدخال قيمة سالبة</small>
-                                        </div>
+
                                         <div class="col-md-12">
                                             <label class="form-label">
                                                 ملاحظات إضافية
@@ -436,7 +474,7 @@ $completedTasks = $stmtCompletedTasks->fetchAll(PDO::FETCH_ASSOC);
                                     </div>
 
                                     <div class="mt-4">
-                                        <button type="submit" name="complete_task" class="btn-brand bg-success"><i class="fa-solid fa-circle-check me-2"></i> تأكيد التركيب وتفعيل الخدمة والعداد</button>
+                                        <button type="submit" name="complete_task" class="btn-brand bg-success"><i class="fa-solid fa-circle-check me-2"></i> تأكيد التركيب وتفعيل الخدمة</button>
                                     </div>
                                 </form>
                             </div>
@@ -448,9 +486,9 @@ $completedTasks = $stmtCompletedTasks->fetchAll(PDO::FETCH_ASSOC);
             <!-- صفحة 2: العدادات المركبة سابقاً -->
             <div id="page-completed-tasks" class="page-view">
                 <div class="admin-card">
-                    <div class="card-title text-success"><i class="fa-solid fa-clock-rotate-left"></i> سجل العدادات التي تم تركيبها</div>
+                    <div class="card-title text-success"><i class="fa-solid fa-clock-rotate-left"></i> سجل عمليات التركيب المكتملة</div>
                     <?php if(empty($completedTasks)): ?>
-                        <div class="text-center py-5"><i class="fa-solid fa-folder-open text-muted fs-1 mb-3"></i><h5 class="fw-bold text-muted">لا توجد أي عدادات مسجلة باسمك بعد</h5></div>
+                        <div class="text-center py-5"><i class="fa-solid fa-folder-open text-muted fs-1 mb-3"></i><h5 class="fw-bold text-muted">لا توجد أي عمليات تركيب مسجلة باسمك بعد</h5></div>
                     <?php else: ?>
                         <div class="table-responsive">
                             <table class="table table-hover">
@@ -467,16 +505,23 @@ $completedTasks = $stmtCompletedTasks->fetchAll(PDO::FETCH_ASSOC);
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    <?php foreach($completedTasks as $comp): ?>
+                                    <?php foreach($completedTasks as $comp): 
+                                        $compIsSewage = isSewageService($comp['srv_name']);
+                                    ?>
                                     <tr>
                                         <td class="fw-bold text-muted">#<?= str_pad($comp['app_id'], 5, '0', STR_PAD_LEFT); ?></td>
                                         <td class="fw-bold text-dark"><?= htmlspecialchars($comp['customer_name']); ?></td>
                                         <td><span class="badge bg-light text-primary border"><?= htmlspecialchars($comp['srv_name']); ?></span></td>
                                         <td><?= htmlspecialchars($comp['cty_name']); ?></td>
-                                        <td><span class="badge bg-secondary font-monospace fs-6"><?= htmlspecialchars($comp['mtr_serial']); ?></span></td>
-                                        <td><span class="badge bg-success"><?= $comp['mtr_type'] == 'Smart' ? 'ذكي' : 'ميكانيكي' ?></span></td>
+                                        <?php if ($compIsSewage): ?>
+                                            <td><span class="badge bg-light text-muted border">لا يوجد عداد</span></td>
+                                            <td><span class="badge bg-light text-muted border">—</span></td>
+                                        <?php else: ?>
+                                            <td><span class="badge bg-secondary font-monospace fs-6"><?= htmlspecialchars($comp['mtr_serial']); ?></span></td>
+                                            <td><span class="badge bg-success"><?= $comp['mtr_type'] == 'Smart' ? 'ذكي' : 'ميكانيكي' ?></span></td>
+                                        <?php endif; ?>
                                         <td class="small text-muted fw-bold">
-                                            أنبوب: <?= $comp['pipe_length']; ?>م<br>
+                                            <?= $compIsSewage ? 'طول الوصلة' : 'أنبوب' ?>: <?= $comp['pipe_length']; ?>م<br>
                                             القطر: <?= $comp['pipe_diameter']; ?> بوصة
                                         </td>
                                         <td>
@@ -508,28 +553,66 @@ $completedTasks = $stmtCompletedTasks->fetchAll(PDO::FETCH_ASSOC);
             return 'W';
         }
 
+        function isSewage(srvName) {
+            return !!(srvName && srvName.indexOf('صرف') !== -1);
+        }
+
         function updateSerialPrefix(srvName) {
             currentSrvName = srvName || "";
             const prefix = getSerialPrefix(currentSrvName);
             document.getElementById('serialPrefixAddon').innerText = prefix + '-';
         }
 
-        // قبل إرسال النموذج: تجميع الرقم التسلسلي الكامل (بادئة + الجزء المدخل) والتحقق من عدم سالبية القراءة
-        function prepareSubmit(e) {
-            const suffix = document.getElementById('mtr_serial_suffix').value.trim();
-            if (!suffix) {
-                Swal.fire({ icon: 'error', title: 'خطأ', text: 'يرجى إدخال الرقم التسلسلي للعداد.', confirmButtonColor: '#0b457f' });
-                e.preventDefault();
-                return false;
-            }
-            const prefix = getSerialPrefix(currentSrvName);
-            document.getElementById('mtr_serial_hidden').value = prefix + '-' + suffix;
+        // تحديث تسمية حقل الطول حسب نوع الخدمة: "طول الوصلة" لخدمة الصرف الصحي، وتبقى "طول الأنبوب المستخدم (متر)" لشبكة المياه كما هي
+        function updatePipeLengthLabel(srvName) {
+            const label = document.getElementById('pipeLengthLabel');
+            label.innerText = isSewage(srvName) ? 'طول الوصلة (متر)' : 'طول الأنبوب المستخدم (متر)';
+        }
 
-            const readingInput = document.querySelector('input[name="initial_reading"]');
-            if (parseFloat(readingInput.value) < 0) {
-                Swal.fire({ icon: 'error', title: 'خطأ', text: 'لا يمكن أن تكون القراءة الافتتاحية للعداد قيمة سالبة.', confirmButtonColor: '#0b457f' });
-                e.preventDefault();
-                return false;
+        // إظهار/إخفاء حقول العداد حسب نوع الخدمة: تظهر لشبكة المياه فقط، وتختفي كلياً للصرف الصحي
+        function toggleMeterSection(srvName) {
+            const meterSection = document.getElementById('meterFieldsSection');
+            const sewageNote = document.getElementById('sewageNote');
+            const serialInput = document.getElementById('mtr_serial_suffix');
+            const readingInput = document.getElementById('initial_reading_input');
+
+            if (isSewage(srvName)) {
+                meterSection.classList.add('d-none');
+                sewageNote.classList.remove('d-none');
+                // تفريغ القيم حتى لا تُرسل بيانات عداد وهمية مع طلب صرف صحي
+                serialInput.value = '';
+                readingInput.value = '0.00';
+            } else {
+                meterSection.classList.remove('d-none');
+                sewageNote.classList.add('d-none');
+            }
+
+            updatePipeLengthLabel(srvName);
+        }
+
+        // قبل إرسال النموذج: تجميع الرقم التسلسلي الكامل (بادئة + الجزء المدخل) والتحقق من عدم سالبية القراءة
+        // ملاحظة: التحقق من حقول العداد يُطبق فقط إذا كانت الخدمة شبكة مياه (ليست صرف صحي)
+        function prepareSubmit(e) {
+            const sewage = isSewage(currentSrvName);
+
+            if (!sewage) {
+                const suffix = document.getElementById('mtr_serial_suffix').value.trim();
+                if (!suffix) {
+                    Swal.fire({ icon: 'error', title: 'خطأ', text: 'يرجى إدخال الرقم التسلسلي للعداد.', confirmButtonColor: '#0b457f' });
+                    e.preventDefault();
+                    return false;
+                }
+                const prefix = getSerialPrefix(currentSrvName);
+                document.getElementById('mtr_serial_hidden').value = prefix + '-' + suffix;
+
+                const readingInput = document.getElementById('initial_reading_input');
+                if (parseFloat(readingInput.value) < 0) {
+                    Swal.fire({ icon: 'error', title: 'خطأ', text: 'لا يمكن أن تكون القراءة الافتتاحية للعداد قيمة سالبة.', confirmButtonColor: '#0b457f' });
+                    e.preventDefault();
+                    return false;
+                }
+            } else {
+                document.getElementById('mtr_serial_hidden').value = '';
             }
 
             const pipeInput = document.querySelector('input[name="pipe_length"]');
@@ -564,9 +647,16 @@ $completedTasks = $stmtCompletedTasks->fetchAll(PDO::FETCH_ASSOC);
             document.getElementById('form_task_id').value = task.task_id;
             document.getElementById('form_app_id').value = task.app_id;
 
-            // تحديث بادئة الرقم التسلسلي حسب نوع خدمة المهمة المختارة
-            updateSerialPrefix(task.srv_name);
+            // تصفير كامل النموذج قبل تعبئة أي بيانات جديدة، حتى لا تنتقل بيانات مهمة سابقة (مياه/صرف)
+            // لمهمة أخرى بمواصفات مختلفة
+            document.getElementById('installForm').reset();
+            document.getElementById('form_task_id').value = task.task_id;
+            document.getElementById('form_app_id').value = task.app_id;
             document.getElementById('mtr_serial_suffix').value = '';
+
+            // تحديث بادئة الرقم التسلسلي وإظهار/إخفاء حقول العداد حسب نوع خدمة المهمة المختارة
+            updateSerialPrefix(task.srv_name);
+            toggleMeterSection(task.srv_name);
 
             // تحديث موقع الخريطة والماركر
             if (currentMap && task.latitude && task.longitude) {
@@ -597,8 +687,9 @@ $completedTasks = $stmtCompletedTasks->fetchAll(PDO::FETCH_ASSOC);
                 currentMarker = L.marker(initialCoords).addTo(currentMap);
                 document.getElementById('btnGoogleMap').href = `https://www.google.com/maps/dir/?api=1&destination=${firstTask.latitude},${firstTask.longitude}`;
 
-                // تهيئة بادئة الرقم التسلسلي لأول مهمة معروضة افتراضياً
+                // تهيئة بادئة الرقم التسلسلي وإظهار/إخفاء حقول العداد لأول مهمة معروضة افتراضياً
                 updateSerialPrefix(firstTask.srv_name);
+                toggleMeterSection(firstTask.srv_name);
             <?php endif; ?>
         });
     </script>
