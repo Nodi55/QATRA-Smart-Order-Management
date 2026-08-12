@@ -1,7 +1,7 @@
 ﻿{
+	"name": "qatra/smart-system",
+	"description": "Smart Order Management System",
 	"require": {
-		"ext-pdo": "*",
-		"ext-pdo_mysql": "*",
-		"ext-mysqli": "*"
+		"php": ">=8.0"
 	}
 }
