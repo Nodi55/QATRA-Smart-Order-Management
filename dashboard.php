@@ -479,6 +479,16 @@ function getAppStageIndex($status) {
     if ($status === 'Rejected') return -1; // حالة خاصة: الطلب مرفوض ولا يكمل بقية المراحل
     return $map[$status] ?? 0;
 }
+
+// =========================================================
+// [إضافة جديدة] تجهيز قائمة الطلبات والفواتير المرتبطة بكل حساب موحد
+// عن طريق مطابقة رقم الصك (deed_no) بين الحسابات والطلبات، لعرضها
+// داخل صفحة تفاصيل الحساب دون المساس بأي من الاستعلامات أو المتغيرات الأصلية
+// =========================================================
+$applicationsByDeed = [];
+foreach ($myApplications as $app) {
+    $applicationsByDeed[$app['deed_no']][] = $app;
+}
 ?>
 
 <!DOCTYPE html>
@@ -597,6 +607,18 @@ function getAppStageIndex($status) {
         .property-box { background: white; border: 1px solid #e2e8f0; border-radius: 20px; padding: 25px; transition: 0.3s; margin-bottom: 20px; border-right: 5px solid var(--nwc-blue); }
         .property-box:hover { transform: translateY(-4px); box-shadow: 0 10px 25px rgba(0,0,0,0.05); }
 
+        /* ============== [إضافة جديدة] بطاقات الحسابات المبسطة في الصفحة الرئيسية ============== */
+        .account-simple-card { background: white; border: 1px solid #e2e8f0; border-radius: 20px; padding: 30px 22px; text-align: center; cursor: pointer; transition: 0.3s; position: relative; height: 100%; border-bottom: 4px solid var(--nwc-blue); }
+        .account-simple-card:hover { transform: translateY(-6px); box-shadow: 0 15px 30px rgba(9,46,84,0.14); border-color: var(--nwc-blue); }
+        .account-simple-icon { width: 64px; height: 64px; border-radius: 50%; background: var(--nwc-light); color: var(--nwc-blue); display: flex; align-items: center; justify-content: center; font-size: 1.7rem; margin: 0 auto 16px; }
+        .account-simple-number { font-weight: 900; color: var(--nwc-navy); font-size: 1.2rem; margin-bottom: 12px; }
+        .account-simple-sub { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; margin-bottom: 10px; min-height: 30px; }
+        .account-simple-arrow { color: var(--nwc-blue); font-size: 0.95rem; margin-top: 8px; font-weight: 800; }
+        .account-simple-arrow i { transition: transform 0.3s; }
+        .account-simple-card:hover .account-simple-arrow i { transform: translateX(-4px); }
+        .new-request-hero-btn { background: linear-gradient(135deg, var(--nwc-navy), var(--nwc-blue)); color: white; border: none; border-radius: 50px; padding: 14px 28px; font-weight: 800; transition: 0.3s; box-shadow: 0 10px 20px rgba(9,46,84,0.2); white-space: nowrap; }
+        .new-request-hero-btn:hover { transform: translateY(-3px); box-shadow: 0 15px 30px rgba(9,46,84,0.3); color: white; }
+
         .notif-box { background: #f8fafc; border-right: 4px solid var(--nwc-blue); border-radius: 12px; padding: 20px; margin-bottom: 15px; font-weight: 700; }
         .notif-box.notif-new { animation: notifSlideIn 0.6s cubic-bezier(0.2,0.8,0.2,1); border-right-color: #10b981; background: #f0fdf9; }
         @keyframes notifSlideIn { from { opacity: 0; transform: translateY(-15px); } to { opacity: 1; transform: translateY(0); } }
@@ -701,16 +723,71 @@ function getAppStageIndex($status) {
         </div>
 
         <div class="custom-tabs fade-in-up delay-2">
-            <button class="tab-btn active" onclick="switchTab('tab-submit', this)"><i class="fa-solid fa-file-signature me-1"></i> تقديم طلب جديد</button>
+            <button class="tab-btn active" id="tabBtnProperties" onclick="switchTab('tab-properties', this)"><i class="fa-solid fa-hotel me-1"></i> حساباتي وعداداتي</button>
+            <button class="tab-btn" id="tabBtnSubmit" onclick="switchTab('tab-submit', this)"><i class="fa-solid fa-file-signature me-1"></i> تقديم طلب جديد</button>
             <button class="tab-btn" onclick="switchTab('tab-history', this)"><i class="fa-solid fa-clock-rotate-left me-1"></i> سجل الطلبات والفواتير</button>
-            <button class="tab-btn" onclick="switchTab('tab-properties', this)"><i class="fa-solid fa-hotel me-1"></i> العدادات والحسابات المفعّلة</button>
             <button class="tab-btn" onclick="switchTab('tab-notifs', this)"><i class="fa-solid fa-bell me-1"></i> مركز الإشعارات</button>
         </div>
 
         <div class="premium-card fade-in-up delay-3">
-            
-            <!-- التبويب 1: تقديم طلب جديد -->
-            <div id="tab-submit" class="tab-panel active">
+
+            <!-- =========================================================
+                 [التبويب الرئيسي الجديد]: حساباتي وعداداتي (الصفحة الأساسية)
+                 يعرض بطاقة مبسطة لكل حساب موحد (رقم الحساب فقط)، وبالضغط عليها
+                 يتم الانتقال إلى صفحة كاملة مستقلة (account_details.php) تعرض
+                 كل تفاصيل الحساب: الخدمات، العدادات، الاستهلاك الشهري،
+                 والفواتير/المبالغ المرتبطة به بالكامل دون حذف أي كود سابق.
+                 ========================================================= -->
+            <div id="tab-properties" class="tab-panel active">
+                <div class="d-flex justify-content-between align-items-center flex-wrap gap-3 mb-2" style="border-bottom: 2px solid var(--nwc-light); padding-bottom: 15px;">
+                    <div class="card-header-title mb-0" style="border-bottom: none; padding-bottom: 0; margin-bottom: 0;">
+                        <i class="fa-solid fa-building-circle-check"></i> حساباتي الموحدة وعداداتي المفعّلة
+                    </div>
+                    <button type="button" class="new-request-hero-btn" onclick="goToSubmitTab()">
+                        <i class="fa-solid fa-circle-plus me-1"></i> تقديم طلب خدمة لعقار جديد
+                    </button>
+                </div>
+
+                <?php if (empty($groupedProperties)): ?>
+                    <div class="text-center py-5">
+                        <i class="fa-solid fa-satellite-dish fs-1 text-muted mb-3 d-block"></i>
+                        <h5 class="fw-bold">لا توجد لديك أي حسابات أو عدادات مفعّلة حتى الآن.</h5>
+                        <p class="text-muted small mb-4">بمجرد سداد الفاتورة وإتمام فني التركيبات لعملية التركيب، سيظهر حسابك هنا آلياً.</p>
+                        <button type="button" class="btn-brand" style="width: auto; padding: 16px 40px; display: inline-block;" onclick="goToSubmitTab()">
+                            <i class="fa-solid fa-paper-plane me-1"></i> تقديم طلب جديد الآن
+                        </button>
+                    </div>
+                <?php else: ?>
+                    <!-- ============== بطاقات الحسابات المبسطة (رقم الحساب فقط) - تفتح صفحة تفاصيل كاملة عند الضغط ============== -->
+                    <div class="row g-3" id="accountsSimpleGrid">
+                        <?php foreach ($groupedProperties as $prop):
+                            $accId = $prop['acc_id'];
+                        ?>
+                            <div class="col-lg-3 col-md-4 col-sm-6">
+                                <a href="account_details.php?acc_id=<?= (int)$accId; ?>" class="text-decoration-none">
+                                    <div class="account-simple-card">
+                                        <div class="account-simple-icon"><i class="fa-solid fa-hotel"></i></div>
+                                        <div class="account-simple-number">حساب #ACC-<?= str_pad($accId, 5, '0', STR_PAD_LEFT); ?></div>
+                                        <div class="account-simple-sub">
+                                            <?php if (empty($prop['services'])): ?>
+                                                <span class="badge bg-light text-muted border">لا توجد خدمات بعد</span>
+                                            <?php else: ?>
+                                                <?php foreach ($prop['services'] as $sName): ?>
+                                                    <span class="badge bg-light text-primary border"><?= htmlspecialchars($sName); ?></span>
+                                                <?php endforeach; ?>
+                                            <?php endif; ?>
+                                        </div>
+                                        <div class="account-simple-arrow">عرض تفاصيل الحساب الكاملة <i class="fa-solid fa-chevron-left"></i></div>
+                                    </div>
+                                </a>
+                            </div>
+                        <?php endforeach; ?>
+                    </div>
+                <?php endif; ?>
+            </div>
+
+            <!-- التبويب: تقديم طلب جديد -->
+            <div id="tab-submit" class="tab-panel">
                 <div class="card-header-title"><i class="fa-solid fa-file-circle-plus"></i> تسجيل عقار جديد وطلب تفعيل خدمة</div>
                 <form id="applicationForm">
                     <input type="hidden" name="submit_new_app" value="1">
@@ -776,7 +853,7 @@ function getAppStageIndex($status) {
                 </form>
             </div>
 
-            <!-- التبويب 2: سجل الطلبات والفواتير المدمج -->
+            <!-- التبويب: سجل الطلبات والفواتير المدمج -->
             <div id="tab-history" class="tab-panel">
                 <div class="card-header-title"><i class="fa-solid fa-clock-rotate-left"></i> السجل الشامل لطلباتك وحالة الدفع</div>
                 <?php if (empty($myApplications)): ?>
@@ -842,62 +919,7 @@ function getAppStageIndex($status) {
                 <?php endif; ?>
             </div>
 
-            <!-- التبويب 3: العدادات والحسابات المفعّلة -->
-            <div id="tab-properties" class="tab-panel">
-                <div class="card-header-title"><i class="fa-solid fa-building-circle-check"></i> سجل الحسابات والعدادات المفعّلة</div>
-                <?php if (empty($groupedProperties)): ?>
-                    <div class="text-center py-5">
-                        <i class="fa-solid fa-satellite-dish fs-1 text-muted mb-3 d-block"></i>
-                        <h5 class="fw-bold">لا توجد خدمات نشطة أو عدادات مركبة حتى الآن.</h5>
-                        <p class="text-muted small">بمجرد سداد الفاتورة وإتمام فني التركيبات لعملية التركيب، ستظهر حساباتك هنا آلياً.</p>
-                    </div>
-                <?php else: ?>
-                    <div class="row g-3">
-                        <?php foreach ($groupedProperties as $prop): ?>
-                            <div class="col-md-6">
-                                <div class="property-box bg-white">
-                                    <div class="d-flex justify-content-between align-items-center mb-3">
-                                        <h5 class="fw-black text-dark m-0"><i class="fa-solid fa-hotel text-primary me-2"></i> حساب موحد #ACC-<?= str_pad($prop['acc_id'], 5, '0', STR_PAD_LEFT); ?></h5>
-                                        <span class="badge bg-success"><i class="fa-solid fa-check"></i> نشط</span>
-                                    </div>
-                                    <div class="small text-muted mb-3">تاريخ تفعيل الحساب: <?= $prop['creation_date']; ?></div>
-                                    <div class="border-top pt-3">
-                                        <p class="mb-2"><strong>رقم الصك الموثق:</strong> <span class="font-monospace text-muted"><?= htmlspecialchars($prop['deed_no']); ?></span></p>
-                                        <p class="mb-2"><strong>المساحة الإجمالية:</strong> <span class="fw-bold text-dark"><?= htmlspecialchars($prop['land_area']); ?> م²</span></p>
-                                        <p class="mb-2"><strong>المالك المسجل:</strong> <span class="fw-bold text-dark"><?= htmlspecialchars($prop['owner_name']); ?></span></p>
-                                        <p class="mb-2"><strong>الخدمات المفعّلة:</strong> 
-                                            <?php foreach ($prop['services'] as $srvName): ?>
-                                                <span class="badge bg-light text-primary border"><?= htmlspecialchars($srvName); ?></span>
-                                            <?php endforeach; ?>
-                                        </p>
-                                    </div>
-                                    
-                                    <div class="bg-light rounded p-3 mt-3 border">
-                                        <div class="fw-bold text-secondary mb-2"><i class="fa-solid fa-microchip text-success"></i> بيانات العدادات الذكية الميدانية:</div>
-                                        <?php if (empty($prop['meters'])): ?>
-                                            <div class="alert alert-warning text-center fw-bold mt-2 mb-0"><i class="fa-solid fa-spinner fa-spin"></i> جاري تركيب وتفعيل العدادات الميدانية...</div>
-                                        <?php else: ?>
-                                            <div class="row g-2">
-                                                <?php foreach ($prop['meters'] as $meter): ?>
-                                                    <div class="col-12 border-bottom pb-2 mb-2" style="border-style: dashed !important;">
-                                                        <div class="d-flex justify-content-between align-items-center">
-                                                            <span class="small text-muted fw-bold">عداد الخدمة: <span class="text-primary"><?= $meter['service'] ?></span></span>
-                                                            <span class="badge bg-info text-dark font-monospace"><?= htmlspecialchars($meter['serial']); ?></span>
-                                                        </div>
-                                                        <div class="small text-muted mt-1">موديل العداد: <?= $meter['type'] == 'Smart' ? 'ذكي' : 'ميكانيكي' ?></div>
-                                                    </div>
-                                                <?php endforeach; ?>
-                                            </div>
-                                        <?php endif; ?>
-                                    </div>
-                                </div>
-                            </div>
-                        <?php endforeach; ?>
-                    </div>
-                <?php endif; ?>
-            </div>
-
-            <!-- التبويب 4: مركز الإشعارات -->
+            <!-- التبويب: مركز الإشعارات -->
             <div id="tab-notifs" class="tab-panel">
                 <div class="card-header-title"><i class="fa-solid fa-bell"></i> مركز الإشعارات الأمنية والتشغيلية</div>
                 <div id="notifsList">
@@ -1094,6 +1116,12 @@ function getAppStageIndex($status) {
                 unreadNotifCount = 0;
                 lastSeenNotifId = lastKnownMaxNotifId;
             }
+        }
+
+        // الانتقال إلى تبويب "تقديم طلب جديد" برمجياً
+        function goToSubmitTab() {
+            let btn = document.getElementById('tabBtnSubmit');
+            if (btn) switchTab('tab-submit', btn);
         }
 
         let map = L.map('propertyMap').setView([24.7136, 46.6753], 5);
